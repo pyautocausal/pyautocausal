@@ -20,7 +20,6 @@ wheels/
 .installed.cfg
 *.egg
 .pyc
-output/
 
 # Virtual Environment
 .env
@@ -55,15 +54,3 @@ htmlcov/
 # OS specific
 .DS_Store
 Thumbs.db 
-
-# VScode settings
-.vscode/
-
-node_modules/
-.bash_history
-.bash_logout
-.bash_profile
-.bashrc
-.docker/
-.lesshst
-.ssh/
