@@ -63,20 +63,11 @@ print(f"Treatment start times: {sorted(treatment_starts.value_counts().sort_inde
 print(f"Sample data:\n{data.head(10)}")
 
 # Define output path
-output_path = Path("pyautocausal/examples/outputs/minimum_wage")
+output_path = Path("examples/outputs/minimum_wage")
 output_path.mkdir(parents=True, exist_ok=True)
-setup_output_directories(output_path)
 
 # Initialize graph
 graph = create_panel_graph(output_path)
-
-# Save data for reference - same location as notebook
-notebooks_path = output_path / "notebooks"
-notebooks_path.mkdir(parents=True, exist_ok=True)
-data_csv_path = notebooks_path / "minimum_wage.csv"
-data.to_csv(data_csv_path, index=False)
-
-print(f"\nProcessed data saved to {data_csv_path}")
 
 # Run the causal pipeline
 graph.fit(df=data)
@@ -86,5 +77,5 @@ print("\n======= Execution Summary =======")
 print_execution_summary(graph)
 print("-" * 50)
 
-export_outputs(graph, output_path, "minimum_wage.csv")
+export_outputs(graph, df=data, output_path=output_path)
 print("\n======= Minimum Wage Analysis Finished =======")
