@@ -54,8 +54,7 @@ PyAutoCausal automatically:
 ```python
 from pathlib import Path
 from pyautocausal.pipelines.example_graph import (
-    create_panel_graph, export_outputs, print_execution_summary
-)
+    create_panel_graph, export_outputs)
 from pyautocausal.datasets import minimum_wage
 
 # Set output directory
@@ -65,9 +64,6 @@ output_dir.mkdir(exist_ok=True)
 # Create and run the causal inference pipeline
 graph = create_panel_graph(output_dir=output_dir)
 graph.fit(df=minimum_wage)
-
-# Print summary of execution
-print_execution_summary(graph)
 
 # Export notebook and visualizations
 export_outputs(graph, df=minimum_wage, output_path=output_dir)
