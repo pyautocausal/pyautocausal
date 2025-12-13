@@ -37,36 +37,36 @@ PyAutoCausal automates the complex decision tree of modern causal inference meth
 4. **Executes analysis** with proper statistical inference
 5. **Exports results** in formats ready for stakeholder communication
 
-## Quick Example: Measuring Feature Impact
+## Quick Example: Automated Staggered DiD Analysis
+
+This example demonstrates PyAutoCausal's automated method selection using county-level minimum wage data from Callaway and Sant'Anna (2021). The dataset contains **staggered treatment adoption** where different states raised minimum wages at different times between 2004-2007, and the outcome is teen employment rates.
+
+PyAutoCausal automatically:
+- **Detects** the staggered treatment structure (multiple treatment cohorts)
+- **Selects** modern difference-in-differences estimators robust to heterogeneous treatment effects
+- **Applies** Callaway-Sant'Anna (2021) estimators with never-treated comparison groups
+- **Validates** parallel trends and balance assumptions
+- **Generates** event study plots showing dynamic treatment effects
+- **Exports** analysis results to an executable Jupyter notebook
+
+**Data Source**: Callaway, Brantly, and Pedro HC Sant'Anna. "Difference-in-differences with multiple time periods." *Journal of Econometrics* 225.2 (2021): 200-230.
 
 ```python
-from pyautocausal.pipelines.example_graph import causal_pipeline
-import pandas as pd
+from pathlib import Path
+from pyautocausal.pipelines.example_graph import (
+    create_panel_graph, export_outputs)
+from pyautocausal.datasets import minimum_wage
 
-# Your product data with treatment (feature rollout) and outcome (engagement)
-data = pd.DataFrame({
-    'id_unit': [...],        # User identifier
-    't': [...],              # Time periods
-    'treat': [...],          # 1 if user has feature, 0 otherwise
-    'y': [...],              # Your KPI (DAU, sessions, revenue, etc.)
-    'x1': [...],             # User characteristics
-    'x2': [...]              # Additional controls
-})
+# Set output directory
+output_dir = Path("output")
+output_dir.mkdir(exist_ok=True)
 
-# PyAutoCausal automatically:
-# - Detects this is panel data with staggered treatment
-# - Chooses modern DiD methods (e.g., Callaway-Sant'Anna)
-# - Handles heterogeneous treatment effects
-# - Produces event study plots
+# Create and run the causal inference pipeline
+graph = create_panel_graph(output_dir=output_dir)
+graph.fit(df=minimum_wage)
 
-pipeline = causal_pipeline(output_path="./feature_impact_analysis")
-pipeline.fit(df=data)
-
-# Results include:
-# - Average treatment effect with confidence intervals
-# - Dynamic effects over time since treatment
-# - Heterogeneity analysis across user segments
-# - Diagnostic plots and assumption checks
+# Export notebook and visualizations
+export_outputs(graph, df=minimum_wage, output_path=output_dir)
 ```
 
 ## Real Tech Applications

@@ -7,9 +7,8 @@ This module contains helper functions for:
 """
 
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, Union, Optional
 import webbrowser
-import os
 import pandas as pd
 
 from pyautocausal.orchestration.graph import ExecutableGraph
@@ -17,25 +16,23 @@ from pyautocausal.persistence.visualizer import visualize_graph
 from pyautocausal.persistence.notebook_export import NotebookExporter
 
 
-def setup_output_directories(output_path: Path) -> Tuple[Path, Path, Path]:
-    """Create and return output subdirectories for plots, text, and notebooks.
+def setup_output_directories(output_path: Path) -> Tuple[Path, Path]:
+    """Create and return output subdirectories for plots and text.
     
     Args:
         output_path: Base output directory
         
     Returns:
-        Tuple of (plots_dir, text_dir, notebooks_dir) as absolute paths
+        Tuple of (plots_dir, text_dir) as absolute paths
     """
     
     plots_dir = output_path / "plots"
     text_dir = output_path / "text"
-    notebooks_dir = output_path / "notebooks"
     
     plots_dir.mkdir(exist_ok=True)
     text_dir.mkdir(exist_ok=True)
-    notebooks_dir.mkdir(exist_ok=True)
     
-    return plots_dir.absolute(), text_dir.absolute(), notebooks_dir.absolute()
+    return plots_dir.absolute(), text_dir.absolute()
 
 
 def print_execution_summary(graph: ExecutableGraph) -> None:
@@ -61,7 +58,13 @@ def print_execution_summary(graph: ExecutableGraph) -> None:
     print(f"Skipped nodes (due to branching): {skipped_nodes}")
 
 
-def export_outputs(graph: ExecutableGraph, output_path: Path, data_path: Path) -> None:
+def export_outputs(
+    graph: ExecutableGraph, 
+    data_path: Optional[Union[Path, str]] = None,
+    df: Optional[pd.DataFrame] = None,
+    output_path: Path = None,
+    data_filename: str = "data.csv"
+) -> None:
     """Export graph visualization, notebook, and HTML report.
     
     This function creates:
@@ -71,23 +74,47 @@ def export_outputs(graph: ExecutableGraph, output_path: Path, data_path: Path) -
     
     Args:
         graph: The ExecutableGraph that was executed
+        data_path: Path to the data file (mutually exclusive with df)
+        df: DataFrame to save and use (mutually exclusive with data_path)
         output_path: Base output directory
+        data_filename: Name to use when saving DataFrame (default: "data.csv")
+    
+    Raises:
+        ValueError: If neither or both data_path and df are provided
     """
+    
+    # Validate inputs
+    if data_path is None and df is None:
+        raise ValueError("Either data_path or df must be provided")
+    if data_path is not None and df is not None:
+        raise ValueError("Only one of data_path or df should be provided, not both")
+
+    # Create output directories if they don't exist
+    plots_dir, text_dir = setup_output_directories(output_path)
+
+    # Handle DataFrame case - save it to output directory
+    if df is not None:
+        data_path = output_path / data_filename
+        df.to_csv(data_path, index=False)
+        print(f"Data saved to {data_path}")
+
     # Graph visualization
-    md_visualization_path = output_path / "text" / "pipeline_visualization.md"
+    md_visualization_path = text_dir / "pipeline_visualization.md"
     visualize_graph(graph, save_path=str(md_visualization_path))
     print(f"Graph visualization saved to {md_visualization_path}")
     
-    # Notebook and HTML export
-    notebook_path = output_path / "notebooks" / "pipeline_execution.ipynb"
-    html_path = output_path / "notebooks" / "pipeline_execution.html"
+    # Notebook and HTML export - place directly in output_path
+    notebook_path = output_path / "pipeline_execution.ipynb"
+    html_path = output_path / "pipeline_execution.html"
     
     exporter = NotebookExporter(graph)
     
-    # Export notebook
+    # Export notebook - use just the filename since notebook and data are in same directory
+    data_file_name = Path(data_path).name
+    
     exporter.export_notebook(
         str(notebook_path),
-        data_path=data_path,  # Relative path for notebook execution
+        data_path=data_file_name,
         loading_function="pd.read_csv"
     )
     print(f"Notebook exported to {notebook_path}")
@@ -97,7 +124,7 @@ def export_outputs(graph: ExecutableGraph, output_path: Path, data_path: Path) -
         html_output_path = exporter.export_and_run_to_html(
             notebook_filepath=notebook_path,
             html_filepath=html_path,
-            data_path=data_path,  # Relative path from notebooks directory
+            data_path=data_file_name,
             loading_function="pd.read_csv",
             timeout=300  # 5 minutes timeout
         )
