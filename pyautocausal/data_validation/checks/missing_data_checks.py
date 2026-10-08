@@ -22,6 +22,10 @@ class MissingDataConfig(DataValidationConfig):
     check_columns: Optional[List[str]] = None  # If None, check all columns
     ignore_columns: Optional[List[str]] = None  # Columns to ignore
 
+    def __post_init__(self):
+        if not 0 <= self.max_missing_fraction <= 1:
+            raise ValueError("max_missing_fraction must be between 0 and 1")
+
 
 class MissingDataCheck(DataValidationCheck[MissingDataConfig]):
     """Check for missing data in the DataFrame."""
@@ -37,6 +41,7 @@ class MissingDataCheck(DataValidationCheck[MissingDataConfig]):
     def validate(self, df: pd.DataFrame) -> DataValidationResult:
         issues = []
         missing_stats = {}
+        cleaning_hints = []
         
         # Determine which columns to check
         # validate that check_columns and ignore_columns are valid
@@ -56,13 +61,12 @@ class MissingDataCheck(DataValidationCheck[MissingDataConfig]):
         # Check each column for missing data
         for col in columns_to_check:
             missing_count = df[col].isna().sum()
-            missing_fraction = missing_count / len(df)
+            missing_fraction = missing_count / len(df) if len(df) else 0.0
             missing_stats[col] = {
                 "missing_count": int(missing_count),
                 "missing_fraction": float(missing_fraction)
             }
             
-            cleaning_hints = []
             if missing_fraction > 0:
                 if missing_fraction > self.config.max_missing_fraction:
                     issues.append(ValidationIssue(
@@ -85,12 +89,11 @@ class MissingDataCheck(DataValidationCheck[MissingDataConfig]):
                         "missing_fraction": float(missing_fraction)
                     }
                 ))
-        cleaning_hints.append(
-            DropMissingRowsHint(
-                target_columns=list(missing_stats.keys()),
+        if any(stats["missing_count"] for stats in missing_stats.values()):
+            cleaning_hints.append(DropMissingRowsHint(
+                target_columns=columns_to_check,
                 how="any"
-            )
-        )
+            ))
                 
         # Determine if the check passed
         passed = not any(issue.severity == self.config.severity_on_fail for issue in issues)
@@ -132,7 +135,7 @@ class CompleteCasesCheck(DataValidationCheck[CompleteCasesConfig]):
         # Count complete cases
         df_subset = df[columns_to_check]
         complete_cases = (~df_subset.isna().any(axis=1)).sum()
-        complete_fraction = complete_cases / len(df)
+        complete_fraction = complete_cases / len(df) if len(df) else 0.0
         
         if complete_fraction < self.config.min_complete_fraction:
             # Find rows with missing data for details
