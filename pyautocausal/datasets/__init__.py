@@ -3,7 +3,7 @@
 This module provides easy access to example datasets for causal inference demonstrations.
 
 Usage:
-    from examples.data import minimum_wage, california_prop99, lalonde
+    from pyautocausal.datasets import minimum_wage, california_prop99, lalonde
     
     df = minimum_wage
     graph.fit(df=df)
@@ -19,6 +19,7 @@ minimum_wage = pd.read_csv(_data_dir / "minimum_wage.csv")
 california_prop99 = pd.read_csv(_data_dir / "california_prop99.csv")
 lalonde = pd.read_csv(_data_dir / "lalonde.csv")
 mpdta = pd.read_csv(_data_dir / "mpdta.csv")
+PENN = pd.read_csv(_data_dir / "PENN.csv", sep=";")
 
 __all__ = [
     "minimum_wage",
@@ -27,4 +28,3 @@ __all__ = [
     "mpdta",
     "PENN"
 ]
-
