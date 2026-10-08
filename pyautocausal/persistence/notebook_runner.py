@@ -1,20 +1,42 @@
 from pathlib import Path
 from typing import Optional, Dict, Any
-import nbformat
 import subprocess
 import sys
 import os
 import tempfile
 import logging
+import json
+from contextlib import contextmanager
+from importlib.util import find_spec
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _execution_kernel(kernel_name):
+    """Use the current interpreter by default without changing user kernels."""
+    if kernel_name is not None:
+        yield kernel_name, os.environ.copy()
+        return
+    with tempfile.TemporaryDirectory(prefix="pyautocausal-kernel-") as directory:
+        name = "pyautocausal-current"
+        kernel_dir = Path(directory) / "kernels" / name
+        kernel_dir.mkdir(parents=True)
+        (kernel_dir / "kernel.json").write_text(json.dumps({
+            "argv": [sys.executable, "-m", "ipykernel_launcher", "-f", "{connection_file}"],
+            "display_name": "PyAutoCausal current Python",
+            "language": "python",
+        }), encoding="utf-8")
+        env = os.environ.copy()
+        env["JUPYTER_PATH"] = directory + os.pathsep + env.get("JUPYTER_PATH", "")
+        yield name, env
 
 
 def run_notebook_and_create_html(
     notebook_path: str | Path,
     output_html_path: Optional[str | Path] = None,
     timeout: int = 600,
-    kernel_name: str = "python3",
+    kernel_name: Optional[str] = None,
     working_directory: Optional[str | Path] = None
 ) -> Path:
     """
@@ -27,7 +49,7 @@ def run_notebook_and_create_html(
         notebook_path: Path to the input notebook file (.ipynb)
         output_html_path: Path for the output HTML file. If None, uses same name as notebook with .html extension
         timeout: Maximum time in seconds to wait for each cell execution (default: 600)
-        kernel_name: Name of the Jupyter kernel to use for execution (default: "python3")
+        kernel_name: Explicit Jupyter kernel name, or None for the current Python interpreter
         working_directory: Directory to run the notebook from. If None, uses notebook's directory
         
     Returns:
@@ -55,31 +77,28 @@ def run_notebook_and_create_html(
     else:
         working_directory = Path(working_directory)
     
+    required = ["nbconvert", "nbclient"] + (["ipykernel"] if kernel_name is None else [])
+    missing = [package for package in required if find_spec(package) is None]
+    if missing:
+        raise ImportError("Notebook execution requires " + ", ".join(missing) +
+                          ". Install with: pip install 'pyautocausal[notebooks]'")
+
     logger.info(f"Executing notebook: {notebook_path}")
     logger.info(f"Working directory: {working_directory}")
     logger.info(f"Output HTML will be saved to: {output_html_path}")
     
     try:
-        # Execute the notebook and convert to HTML in one step
-        cmd = [
-            sys.executable, "-m", "jupyter", "nbconvert",
-            "--to", "html",
-            "--execute",
-            "--ExecutePreprocessor.timeout", str(timeout),
-            "--ExecutePreprocessor.kernel_name", kernel_name,
-            "--output", str(output_html_path.absolute()),
-            str(notebook_path.absolute())
-        ]
-        
-        # Run the command
-        result = subprocess.run(
-            cmd,
-            cwd=working_directory,
-            check=True,
-            capture_output=True,
-            text=True
-        )
-        
+        with _execution_kernel(kernel_name) as (selected_kernel, env):
+            cmd = [
+                sys.executable, "-m", "nbconvert", "--to", "html", "--execute",
+                "--ExecutePreprocessor.timeout", str(timeout),
+                "--ExecutePreprocessor.kernel_name", selected_kernel,
+                "--output", str(output_html_path.absolute()),
+                str(notebook_path.absolute())
+            ]
+            subprocess.run(cmd, cwd=working_directory, check=True,
+                           capture_output=True, text=True, env=env)
+
         logger.info(f"Successfully executed notebook and created HTML: {output_html_path}")
         return output_html_path
         
@@ -127,13 +146,16 @@ def convert_notebook_to_html(
     else:
         output_html_path = Path(output_html_path)
     
+    if find_spec("nbconvert") is None:
+        raise ImportError("HTML export requires nbconvert. Install with: pip install 'pyautocausal[notebooks]'")
+
     logger.info(f"Converting notebook to HTML: {notebook_path}")
     logger.info(f"Output HTML: {output_html_path}")
     
     try:
         # Build the command
         cmd = [
-            sys.executable, "-m", "jupyter", "nbconvert",
+            sys.executable, "-m", "nbconvert",
             "--to", "html",
             "--output", str(output_html_path.absolute()),
             str(notebook_path.absolute())

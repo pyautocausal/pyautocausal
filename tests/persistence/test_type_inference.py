@@ -22,7 +22,8 @@ def test_infer_list_type():
     assert infer_output_type(List[int]) == OutputType.JSON
 
 def test_infer_union_type():
-    assert infer_output_type(Union[str, int]) == OutputType.TEXT
+    with pytest.raises(ValueError, match="single output type"):
+        infer_output_type(Union[str, int])
     assert infer_output_type(Union[dict, list]) == OutputType.JSON
 
 def test_infer_none_type():
