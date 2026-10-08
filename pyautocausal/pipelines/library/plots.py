@@ -184,7 +184,9 @@ def uplift_curve_plot(spec: UpliftSpec, **kwargs) -> plt.Figure:
     """
     Create uplift curve plot using native implementation.
     """
-    if spec.cate_estimates is None or spec.ate_estimate is None:
+    if spec.cate_estimates is None:
+        raise ValueError("Conditional treatment effects are unavailable for this estimator; an uplift curve requires estimated CATEs.")
+    if spec.ate_estimate is None:
         raise ValueError("No uplift estimates found. Ensure model is fitted.")
 
     y_true = spec.data[spec.outcome_col].values
@@ -803,6 +805,16 @@ def plot_balance_coefficients(spec, **kwargs) -> plt.Figure:
         raise ValueError("No balance statistics found. Run balance tests first.")
     
     balance_df = spec.balance_stats
+    if balance_df.empty:
+        reason = getattr(spec, 'balance_diagnostics', {}).get(
+            'reason', 'No control covariates are available for balance assessment.')
+        fig, ax = plt.subplots(figsize=(10, 3))
+        ax.set_axis_off()
+        ax.set_title('Covariate balance unavailable')
+        ax.text(0.5, 0.5, reason, ha='center', va='center', wrap=True,
+                transform=ax.transAxes)
+        fig.tight_layout()
+        return fig
     
     # Create figure
     fig, ax = plt.subplots(figsize=(10, max(6, len(balance_df) * 0.4)))
@@ -1072,7 +1084,9 @@ def uplift_curve_plot_adaptive(spec: UpliftSpec, **kwargs) -> plt.Figure:
     """
     Create adaptive uplift curve plot that handles both balanced and imbalanced datasets.
     """
-    if spec.cate_estimates is None or spec.ate_estimate is None:
+    if spec.cate_estimates is None:
+        raise ValueError("Conditional treatment effects are unavailable for this estimator; an uplift curve requires estimated CATEs.")
+    if spec.ate_estimate is None:
         raise ValueError("No uplift estimates found. Ensure model is fitted.")
 
     y_true = spec.data[spec.outcome_col].values
@@ -1133,6 +1147,16 @@ def plot_balance_coefficients(spec, **kwargs) -> plt.Figure:
         raise ValueError("No balance statistics found. Run balance tests first.")
     
     balance_df = spec.balance_stats
+    if balance_df.empty:
+        reason = getattr(spec, 'balance_diagnostics', {}).get(
+            'reason', 'No control covariates are available for balance assessment.')
+        fig, ax = plt.subplots(figsize=(10, 3))
+        ax.set_axis_off()
+        ax.set_title('Covariate balance unavailable')
+        ax.text(0.5, 0.5, reason, ha='center', va='center', wrap=True,
+                transform=ax.transAxes)
+        fig.tight_layout()
+        return fig
     
     # Create figure
     fig, ax = plt.subplots(figsize=(10, max(6, len(balance_df) * 0.4)))

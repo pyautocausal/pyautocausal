@@ -260,10 +260,16 @@ class DataProcessor(object):
         '''Rescale covariates to be unit variance'''
 
         #Combine control and treated into one big dataframe, over which we will compute variance for each covariate
-        big_dataframe = np.concatenate((treated_covariates, control_covariates), axis=1)
+        big_dataframe = np.concatenate((treated_covariates, control_covariates), axis=1).astype(float)
+        if not np.isfinite(big_dataframe).all():
+            raise ValueError("Synthetic control covariates must contain only finite values")
 
-        #Rescale each covariate to have unit variance
-        big_dataframe /= np.apply_along_axis(np.std, 0, big_dataframe)
+        # Rows are covariates and columns are units. Scale each predictor
+        # across units, never across predictors within a unit. A constant
+        # predictor has zero pairwise differences and needs no rescaling.
+        scale = np.std(big_dataframe, axis=1, keepdims=True)
+        scale[scale == 0] = 1.0
+        big_dataframe /= scale
 
         #Re-seperate treated and control from big dataframe
         treated_covariates = big_dataframe[:,0].reshape(n_covariates, 1) #First column is treated unit

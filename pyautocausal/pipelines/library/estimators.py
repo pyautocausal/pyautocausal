@@ -58,380 +58,165 @@ def create_model_matrices(spec: BaseSpec) -> Tuple[np.ndarray, np.ndarray]:
     return y, X
 
 
-# Helper functions for self-contained uplift modeling
-def _calculate_bootstrap_ci(estimates, confidence_level=0.95, n_bootstrap=1000):
-    """Calculate bootstrap confidence intervals for estimates."""
-    np.random.seed(42)
-    bootstrap_estimates = []
-    
-    for _ in range(n_bootstrap):
-        sample_indices = np.random.choice(len(estimates), size=len(estimates), replace=True)
-        bootstrap_sample = estimates[sample_indices]
-        bootstrap_estimates.append(np.mean(bootstrap_sample))
-    
-    alpha = 1 - confidence_level
-    lower_percentile = (alpha / 2) * 100
-    upper_percentile = (1 - alpha / 2) * 100
-    
-    lower_bound = np.percentile(bootstrap_estimates, lower_percentile)
-    upper_bound = np.percentile(bootstrap_estimates, upper_percentile)
-    
-    return lower_bound, upper_bound
-
+# Experimental probability-based uplift estimators. Class balancing changes
+# target probabilities and must not be used for potential outcome estimation.
 def _validate_uplift_data(X, y, t):
-    """Validate data for uplift modeling."""
     if len(X) != len(y) or len(X) != len(t):
         raise ValueError("X, y, and t must have the same length")
-    
-    if not all(np.isin(t, [0, 1])):
-        raise ValueError("Treatment must be binary (0, 1)")
-    
-    if not all(np.isin(y, [0, 1])):
+    if not np.isin(t, [0, 1]).all() or len(np.unique(t)) != 2:
+        raise ValueError("Treatment must contain both binary arms (0, 1)")
+    if not np.isin(y, [0, 1]).all():
         raise ValueError("Outcome must be binary (0, 1)")
-    
-    # Check for sufficient samples in each group
-    n_treated = np.sum(t)
-    n_control = len(t) - n_treated
-    
-    if n_treated < 10 or n_control < 10:
-        warnings.warn(f"Small sample sizes: {n_treated} treated, {n_control} control")
+    if not np.isfinite(X.astype(float)).all():
+        raise ValueError("Uplift features must be finite numeric values")
+    if min(np.sum(t == 0), np.sum(t == 1)) < 10:
+        warnings.warn("Fewer than ten observations in a treatment arm", UserWarning)
+
+
+def _uplift_arrays(spec):
+    X = spec.data[spec.control_cols].to_numpy(dtype=float)
+    y = spec.data[spec.outcome_col].to_numpy()
+    t = spec.data[spec.treatment_cols[0]].to_numpy()
+    _validate_uplift_data(X, y, t)
+    # A constant feature supports the explicitly unadjusted model.
+    if X.shape[1] == 0:
+        X = np.ones((len(y), 1))
+    return X, y, t
+
+
+def _outcome_forest():
+    return RandomForestClassifier(n_estimators=200, max_depth=10,
+                                  min_samples_split=50, min_samples_leaf=20,
+                                  random_state=42)
+
+
+def _positive_probability(model, X):
+    """predict_proba for class 1, including single-outcome-class arms."""
+    classes = np.asarray(model.classes_)
+    if 1 not in classes:
+        return np.zeros(len(X))
+    return model.predict_proba(X)[:, np.flatnonzero(classes == 1)[0]]
+
+
+def _store_uplift(spec, name, cate, models):
+    spec.model_type = name.replace('_', '-')
+    spec.models = spec.model = models
+    spec.cate_estimates = {name: cate}
+    spec.ate_estimate = float(np.mean(cate))
+    # Resampling already fitted predictions conditions on the fitted models and
+    # is not an interval for the causal ATE. No interval is claimed here.
+    spec.ate_ci = None
+    spec.inference = {
+        'status': 'unavailable', 'estimand': 'sample-average predicted CATE',
+        'reason': 'Model-fitting uncertainty is not estimated for this experimental meta-learner.'
+    }
+    return spec
 
 
 @make_transformable
 def fit_s_learner(spec: UpliftSpec) -> UpliftSpec:
-    """
-    Fit S-learner using only scikit-learn.
-    Single model with treatment as a feature.
-    """
-    # Extract data
-    X = spec.data[spec.control_cols].values
-    y = spec.data[spec.outcome_col].values
-    t = spec.data[spec.treatment_cols[0]].values
-    
-    # Validate data
-    _validate_uplift_data(X, y, t)
-    
-    # Create feature matrix with treatment indicator
-    X_with_treatment = np.column_stack([X, t])
-    
-    # Use better hyperparameters for sparse/imbalanced data
-    model = RandomForestClassifier(
-        n_estimators=200,  # More trees for better learning
-        max_depth=10,      # Limit depth to avoid overfitting
-        min_samples_split=50,  # Require more samples to split
-        min_samples_leaf=20,   # Require more samples per leaf
-        class_weight='balanced',  # Handle class imbalance
-        random_state=42
-    )
-    model.fit(X_with_treatment, y)
-    
-    # Predict outcomes under treatment and control
-    X_treat = np.column_stack([X, np.ones(len(X))])
-    X_control = np.column_stack([X, np.zeros(len(X))])
-    
-    prob_treat = model.predict_proba(X_treat)[:, 1]
-    prob_control = model.predict_proba(X_control)[:, 1]
-    
-    # Calculate individual treatment effects
-    cate_estimates = prob_treat - prob_control
-    
-    # Add some heterogeneity if all estimates are too similar
-    if np.std(cate_estimates) < 1e-6:
-        print("WARNING: S-learner found no heterogeneity, adding noise-based heterogeneity")
-        # Create heterogeneity based on feature interactions
-        feature_importance = model.feature_importances_[:-1]  # Exclude treatment indicator
-        heterogeneity_score = np.dot(X, feature_importance)
-        heterogeneity_score = (heterogeneity_score - np.mean(heterogeneity_score)) / np.std(heterogeneity_score)
-        cate_estimates = cate_estimates + 0.0001 * heterogeneity_score  # Small heterogeneity
-    
-    ate_estimate = np.mean(cate_estimates)
-    ate_ci = _calculate_bootstrap_ci(cate_estimates)
-    
-    # Store results
-    spec.model_type = 's-learner'
-    spec.models = {'s_model': model}
-    spec.cate_estimates = {'s_learner': cate_estimates}
-    spec.ate_estimate = ate_estimate
-    spec.ate_ci = ate_ci
-    spec.model = model
-    
-    return spec
+    """Experimental S-learner; point predictions only (ATE inference unavailable)."""
+    # A shared specification can feed several independent graph branches.
+    spec = copy.copy(spec)
+    X, y, t = _uplift_arrays(spec)
+    model = _outcome_forest()
+    model.fit(np.column_stack([X, t]), y)
+    treated = _positive_probability(model, np.column_stack([X, np.ones(len(X))]))
+    control = _positive_probability(model, np.column_stack([X, np.zeros(len(X))]))
+    return _store_uplift(spec, 's_learner', treated - control, {'s_model': model})
 
-@make_transformable  
+
+@make_transformable
 def fit_t_learner(spec: UpliftSpec) -> UpliftSpec:
-    """
-    Fit T-learner using only scikit-learn.
-    Separate models for treatment and control groups.
-    """
-    # Extract data
-    X = spec.data[spec.control_cols].values
-    y = spec.data[spec.outcome_col].values
-    t = spec.data[spec.treatment_cols[0]].values
-    
-    # Validate data
-    _validate_uplift_data(X, y, t)
-    
-    # Split data by treatment
-    X_treated = X[t == 1]
-    y_treated = y[t == 1]
-    X_control = X[t == 0]
-    y_control = y[t == 0]
-    
-    # Use better hyperparameters for sparse/imbalanced data
-    model_params = {
-        'n_estimators': 200,
-        'max_depth': 10,
-        'min_samples_split': 50,
-        'min_samples_leaf': 20,
-        'class_weight': 'balanced',
-        'random_state': 42
-    }
-    
-    model_treated = RandomForestClassifier(**model_params)
-    model_control = RandomForestClassifier(**model_params)
-    
-    model_treated.fit(X_treated, y_treated)
-    model_control.fit(X_control, y_control)
-    
-    # Predict on all data
-    prob_treated = model_treated.predict_proba(X)[:, 1]
-    prob_control = model_control.predict_proba(X)[:, 1]
-    
-    # Calculate individual treatment effects
-    cate_estimates = prob_treated - prob_control
-    
-    # Add some heterogeneity if all estimates are too similar
-    if np.std(cate_estimates) < 1e-6:
-        print("WARNING: T-learner found no heterogeneity, adding feature-based heterogeneity")
-        # Create heterogeneity based on feature variance in treated vs control models
-        treated_pred_var = np.var(prob_treated)
-        control_pred_var = np.var(prob_control)
-        if treated_pred_var > 0 or control_pred_var > 0:
-            heterogeneity_score = (prob_treated - np.mean(prob_treated)) - (prob_control - np.mean(prob_control))
-            heterogeneity_score = heterogeneity_score / (np.std(heterogeneity_score) + 1e-8)
-            cate_estimates = cate_estimates + 0.0001 * heterogeneity_score
-    
-    ate_estimate = np.mean(cate_estimates)
-    ate_ci = _calculate_bootstrap_ci(cate_estimates)
-    
-    # Store results
-    spec.model_type = 't-learner'
-    spec.models = {'treated_model': model_treated, 'control_model': model_control}
-    spec.cate_estimates = {'t_learner': cate_estimates}
-    spec.ate_estimate = ate_estimate
-    spec.ate_ci = ate_ci
-    spec.model = {'treated': model_treated, 'control': model_control}
-    
-    return spec
-    
+    """Experimental T-learner; retains natural outcome class probabilities."""
+    # A shared specification can feed several independent graph branches.
+    spec = copy.copy(spec)
+    X, y, t = _uplift_arrays(spec)
+    treated, control = _outcome_forest(), _outcome_forest()
+    treated.fit(X[t == 1], y[t == 1])
+    control.fit(X[t == 0], y[t == 0])
+    cate = _positive_probability(treated, X) - _positive_probability(control, X)
+    return _store_uplift(spec, 't_learner', cate,
+                         {'treated_model': treated, 'control_model': control})
+
+
 @make_transformable
 def fit_x_learner(spec: UpliftSpec) -> UpliftSpec:
-    """
-    Fit X-learner using only scikit-learn.
-    Enhanced T-learner with cross-fitting and regression on pseudo-outcomes.
-    """
+    """Experimental X-learner (Künzel et al.); no causal interval is claimed."""
+    # A shared specification can feed several independent graph branches.
+    spec = copy.copy(spec)
     from sklearn.ensemble import RandomForestRegressor
-    
-    # Extract data
-    X = spec.data[spec.control_cols].values
-    y = spec.data[spec.outcome_col].values
-    t = spec.data[spec.treatment_cols[0]].values
-    
-    # Validate data
-    _validate_uplift_data(X, y, t)
-    
-    # Step 1: Fit outcome models (same as T-learner)
-    X_treated = X[t == 1]
-    y_treated = y[t == 1]
-    X_control = X[t == 0]
-    y_control = y[t == 0]
-    
-    # Use better hyperparameters for sparse data
-    model_params = {
-        'n_estimators': 200,
-        'max_depth': 10,
-        'min_samples_split': 50,
-        'min_samples_leaf': 20,
-        'random_state': 42
-    }
-    
-    model_treated = RandomForestClassifier(**{**model_params, 'class_weight': 'balanced'})
-    model_control = RandomForestClassifier(**{**model_params, 'class_weight': 'balanced'})
-    
-    model_treated.fit(X_treated, y_treated)
-    model_control.fit(X_control, y_control)
-    
-    # Step 2: Calculate pseudo-outcomes
-    # For treated units: Y - μ₀(X)
-    # For control units: μ₁(X) - Y
-    
-    pseudo_outcomes_treated = y_treated - model_control.predict_proba(X_treated)[:, 1]
-    pseudo_outcomes_control = model_treated.predict_proba(X_control)[:, 1] - y_control
-    
-    # Step 3: Fit REGRESSION models on continuous pseudo-outcomes
-    tau_treated_model = RandomForestRegressor(
-        n_estimators=200,
-        max_depth=8,
-        min_samples_split=30,
-        min_samples_leaf=15,
-        random_state=42
-    )
-    tau_control_model = RandomForestRegressor(
-        n_estimators=200,
-        max_depth=8,
-        min_samples_split=30,
-        min_samples_leaf=15,
-        random_state=42
-    )
-    
-    tau_treated_model.fit(X_treated, pseudo_outcomes_treated)
-    tau_control_model.fit(X_control, pseudo_outcomes_control)
-    
-    # Step 4: Predict treatment effects
-    tau_treated_pred = tau_treated_model.predict(X)
-    tau_control_pred = tau_control_model.predict(X)
-    
-    # Estimate propensity scores for weighting
-    prop_model = LogisticRegression(random_state=42, max_iter=1000)
-    prop_model.fit(X, t)
-    propensity_scores = prop_model.predict_proba(X)[:, 1]
-    propensity_scores = np.clip(propensity_scores, 0.01, 0.99)
-    
-    # Weighted combination using propensity scores
-    # Higher weight to control model predictions when propensity is low
-    weights_control = (1 - propensity_scores)
-    weights_treated = propensity_scores
-    
-    cate_estimates = (weights_treated * tau_treated_pred + weights_control * tau_control_pred) / (weights_treated + weights_control)
-    
-    # Add heterogeneity if needed
-    if np.std(cate_estimates) < 1e-6:
-        print("WARNING: X-learner found no heterogeneity, adding interaction-based heterogeneity")
-        # Use the difference between the two tau predictions as heterogeneity signal
-        interaction_effect = tau_treated_pred - tau_control_pred
-        interaction_effect = (interaction_effect - np.mean(interaction_effect)) / (np.std(interaction_effect) + 1e-8)
-        cate_estimates = cate_estimates + 0.0001 * interaction_effect
-    
-    ate_estimate = np.mean(cate_estimates)
-    ate_ci = _calculate_bootstrap_ci(cate_estimates)
-    
-    # Store results
-    spec.model_type = 'x-learner'
-    spec.models = {
-        'treated_model': model_treated,
-        'control_model': model_control,
-        'tau_treated_model': tau_treated_model,
-        'tau_control_model': tau_control_model,
-        'propensity_model': prop_model
-    }
-    spec.cate_estimates = {'x_learner': cate_estimates}
-    spec.ate_estimate = ate_estimate
-    spec.ate_ci = ate_ci
-    spec.model = spec.models  # For compatibility
-    
-    return spec
-    
+    X, y, t = _uplift_arrays(spec)
+    treated, control = _outcome_forest(), _outcome_forest()
+    treated.fit(X[t == 1], y[t == 1])
+    control.fit(X[t == 0], y[t == 0])
+    pseudo_treated = y[t == 1] - _positive_probability(control, X[t == 1])
+    pseudo_control = _positive_probability(treated, X[t == 0]) - y[t == 0]
+    params = dict(n_estimators=200, max_depth=8, min_samples_split=30,
+                  min_samples_leaf=15, random_state=42)
+    tau_treated, tau_control = RandomForestRegressor(**params), RandomForestRegressor(**params)
+    tau_treated.fit(X[t == 1], pseudo_treated)
+    tau_control.fit(X[t == 0], pseudo_control)
+    propensity = LogisticRegression(random_state=42, max_iter=1000).fit(X, t)
+    e = _positive_probability(propensity, X)
+    # g(x) weights the effect model fitted on controls (tau_0).
+    cate = e * tau_control.predict(X) + (1 - e) * tau_treated.predict(X)
+    spec.propensity_score = e
+    return _store_uplift(spec, 'x_learner', cate, {
+        'treated_model': treated, 'control_model': control,
+        'tau_treated_model': tau_treated, 'tau_control_model': tau_control,
+        'propensity_model': propensity,
+    })
+
+
 @make_transformable
 def fit_double_ml_binary(spec: UpliftSpec) -> UpliftSpec:
+    """Experimental cross-fitted AIPW ATE for independent observations.
+
+    Uses separate outcome regressions and the orthogonal ATE score. The normal
+    interval requires unconfoundedness, overlap and adequate nuisance-model
+    convergence. It does not estimate CATE or support clustered observations.
     """
-    Fit simplified Double ML using only scikit-learn.
-    Doubly robust estimation with cross-fitting.
-    """
-    # Extract data
-    X = spec.data[spec.control_cols].values
-    y = spec.data[spec.outcome_col].values
-    t = spec.data[spec.treatment_cols[0]].values
-    
-    # Validate data
-    _validate_uplift_data(X, y, t)
-    
-    # Cross-fitting setup
-    n_folds = 5
-    kf = KFold(n_splits=n_folds, shuffle=True, random_state=42)
-    
-    # Storage for cross-fitted predictions
-    outcome_preds = np.zeros(len(y))
-    propensity_preds = np.zeros(len(t))
-    
-    # Cross-fitting
-    for train_idx, test_idx in kf.split(X):
-        X_train, X_test = X[train_idx], X[test_idx]
-        y_train, y_test = y[train_idx], y[test_idx]
-        t_train, t_test = t[train_idx], t[test_idx]
-        
-        # Outcome model with better hyperparameters
-        outcome_model = RandomForestClassifier(
-            n_estimators=200,
-            max_depth=10,
-            min_samples_split=50,
-            min_samples_leaf=20,
-            class_weight='balanced',
-            random_state=42
-        )
-        outcome_model.fit(X_train, y_train)
-        outcome_preds[test_idx] = outcome_model.predict_proba(X_test)[:, 1]
-        
-        # Propensity model
-        prop_model = LogisticRegression(random_state=42, max_iter=1000)
-        prop_model.fit(X_train, t_train)
-        propensity_preds[test_idx] = prop_model.predict_proba(X_test)[:, 1]
-    
-    # Doubly robust moment conditions
-    # ψ = (T - e(X))/e(X)(1-e(X)) * (Y - μ(X))
-    
-    # Clip propensity scores to avoid division issues
-    propensity_preds = np.clip(propensity_preds, 0.01, 0.99)
-    
-    # Calculate moment conditions
-    weights = (t - propensity_preds) / (propensity_preds * (1 - propensity_preds))
-    residuals = y - outcome_preds
-    moment_conditions = weights * residuals
-    
-    # ATE estimate
-    ate_estimate = np.mean(moment_conditions)
-    
-    # Individual treatment effects with better heterogeneity modeling
-    # Use feature interactions and residual patterns for heterogeneity
-    
-    # Method 1: Use residuals scaled by propensity variance
-    propensity_variance = propensity_preds * (1 - propensity_preds)
-    heterogeneity_base = residuals / np.sqrt(propensity_variance + 1e-8)
-    
-    # Method 2: Use outcome model predictions as heterogeneity indicator
-    outcome_heterogeneity = outcome_preds - np.mean(outcome_preds)
-    
-    # Method 3: Use propensity score deviations
-    propensity_heterogeneity = propensity_preds - np.mean(propensity_preds)
-    
-    # Combine different sources of heterogeneity
-    combined_heterogeneity = (
-        0.4 * heterogeneity_base + 
-        0.3 * outcome_heterogeneity + 
-        0.3 * propensity_heterogeneity
-    )
-    
-    # Normalize and scale
-    if np.std(combined_heterogeneity) > 1e-8:
-        combined_heterogeneity = (combined_heterogeneity - np.mean(combined_heterogeneity)) / np.std(combined_heterogeneity)
-        cate_estimates = np.full(len(y), ate_estimate) + 0.0002 * combined_heterogeneity
-    else:
-        print("WARNING: Double ML found no heterogeneity sources")
-        cate_estimates = np.full(len(y), ate_estimate) + 0.0001 * np.random.randn(len(y))
-    
-    # Analytical confidence interval (simplified)
-    ate_var = np.var(moment_conditions) / len(moment_conditions)
-    ate_se = np.sqrt(ate_var)
-    ate_ci = (ate_estimate - 1.96 * ate_se, ate_estimate + 1.96 * ate_se)
-    
-    # Store results
+    # A shared specification can feed several independent graph branches.
+    spec = copy.copy(spec)
+    from sklearn.model_selection import StratifiedKFold
+    X, y, t = _uplift_arrays(spec)
+    if min(np.sum(t == 0), np.sum(t == 1)) < 5:
+        raise ValueError("Cross-fitting requires at least five observations in each arm")
+    if spec.unit_col in spec.data and spec.data[spec.unit_col].duplicated().any():
+        raise ValueError("AIPW inference requires independent units; repeated unit IDs are unsupported")
+    mu0, mu1, propensity = (np.zeros(len(y)) for _ in range(3))
+    fold_models = []
+    folds = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    for train, test in folds.split(X, t):
+        control, treated = _outcome_forest(), _outcome_forest()
+        control.fit(X[train][t[train] == 0], y[train][t[train] == 0])
+        treated.fit(X[train][t[train] == 1], y[train][t[train] == 1])
+        prop = LogisticRegression(random_state=42, max_iter=1000).fit(X[train], t[train])
+        mu0[test] = _positive_probability(control, X[test])
+        mu1[test] = _positive_probability(treated, X[test])
+        propensity[test] = _positive_probability(prop, X[test])
+        fold_models.append({'control_model': control, 'treated_model': treated,
+                            'propensity_model': prop})
+    if np.any((propensity <= 0.01) | (propensity >= 0.99)):
+        raise ValueError("Estimated propensity scores violate required overlap (0.01, 0.99)")
+    scores = mu1 - mu0 + t * (y - mu1) / propensity - (1 - t) * (y - mu0) / (1 - propensity)
+    ate = float(np.mean(scores))
+    se = float(np.std(scores, ddof=1) / np.sqrt(len(scores)))
+    from scipy.stats import norm
+    margin = norm.ppf(0.975) * se
     spec.model_type = 'double-ml'
-    spec.models = {'outcome_model': outcome_model, 'propensity_model': prop_model}
-    spec.cate_estimates = {'double_ml': cate_estimates}
-    spec.ate_estimate = ate_estimate
-    spec.ate_ci = ate_ci
-    spec.model = {'outcome': outcome_model, 'propensity': prop_model}
-    spec.propensity_score = propensity_preds
-    
+    spec.models = spec.model = {'fold_models': fold_models}
+    spec.cate_estimates = None
+    spec.ate_estimate = ate
+    spec.ate_ci = (ate - margin, ate + margin)
+    spec.propensity_score = propensity
+    spec.inference = {
+        'status': 'asymptotic', 'method': 'cross-fitted AIPW influence function',
+        'estimand': 'ATE', 'standard_error': se, 'confidence_level': 0.95,
+        'assumptions': 'Independent units, unconfoundedness, overlap, and consistent nuisance fits at sufficient rates.',
+        'cate_status': 'unavailable',
+    }
     return spec
 
 
@@ -486,6 +271,8 @@ def fit_ols(spec: BaseSpec, weights: Optional[np.ndarray] = None) -> Results:
     Returns:
         Specification with model field set to the fitted model
     """
+    # A shared specification can feed several independent graph branches.
+    spec = copy.copy(spec)
     # We can still use the formula interface directly for OLS
     data = spec.data
     formula = spec.formula
@@ -528,6 +315,8 @@ def fit_weighted_ols(spec: BaseSpec) -> Results:
     Returns:
         Fitted statsmodels fit_weighted_ols model results
     """
+    # A shared specification can feed several independent graph branches.
+    spec = copy.copy(spec)
     if "weights" in spec.data.columns:
         weights = spec.data['weights']
     else:
@@ -565,6 +354,8 @@ def fit_double_lasso(
     Returns:
         Fitted OLS model for the final stage regression
     """
+    # A shared specification can feed several independent graph branches.
+    spec = copy.copy(spec)
     # Use patsy to create design matrices
     y_df, X_df = create_model_matrices(spec)
     y = y_df.values.ravel()  # Convert to 1D array
@@ -612,6 +403,76 @@ def fit_double_lasso(
 
 
 
+def _cs_backend_spec(spec):
+    """Protect input columns from temporary names used by the C&S backend."""
+    reserved = {'Intercept', 'w', 'w1', 'rowid', 'C', 'G_m', 'y_main',
+                'y0', 'y1', 'dy', 'never_treated'}
+    columns = list(dict.fromkeys([
+        spec.outcome_col, spec.unit_col, spec.time_col, spec.treatment_time_col,
+        *(spec.control_cols or []),
+    ]))
+    occupied = set(spec.data.columns)
+    mapping = {}
+    for col in columns:
+        if col in reserved:
+            alias = f'__pyautocausal_cs_{len(mapping)}'
+            while alias in occupied:
+                alias += '_'
+            mapping[col] = alias
+            occupied.add(alias)
+    backend_spec = copy.copy(spec)
+    backend_spec.data = spec.data.rename(columns=mapping)
+    for field in ['outcome_col', 'unit_col', 'time_col', 'treatment_time_col']:
+        value = getattr(spec, field)
+        setattr(backend_spec, field, mapping.get(value, value))
+    backend_spec.control_cols = [mapping.get(col, col) for col in spec.control_cols or []]
+    return backend_spec, mapping
+
+
+def _cs_covariate_formula(spec):
+    controls = list(spec.control_cols or [])
+    missing = [c for c in controls if c not in spec.data]
+    if missing:
+        raise ValueError(f"Missing C&S covariates: {missing}")
+    # The bundled estimator repeatedly builds its formula after preprocessing;
+    # transformed/categorical columns are not preserved by that backend.
+    for col in controls:
+        if not col.isidentifier() or not pd.api.types.is_numeric_dtype(spec.data[col]):
+            raise ValueError("C&S covariates must be numeric columns with identifier names")
+        if not np.isfinite(spec.data[col].to_numpy(dtype=float)).all():
+            raise ValueError(f"C&S covariate {col} must be finite")
+    formula = f"{spec.outcome_col} ~ " + (" + ".join(controls) if controls else "1")
+    try:
+        patsy.dmatrices(formula, spec.data, NA_action='raise')
+    except Exception as exc:
+        raise ValueError(f"Invalid C&S covariate formula: {formula}") from exc
+    return formula
+
+
+def _prepare_cs_data(spec):
+    data = spec.data.copy()
+    unit, time, cohort = spec.unit_col, spec.time_col, spec.treatment_time_col
+    if data.duplicated([unit, time]).any():
+        raise ValueError("C&S requires one observation per unit and time")
+    if data.groupby(unit)[cohort].nunique(dropna=False).gt(1).any():
+        raise ValueError("Treatment cohort must be constant within each unit")
+    # Zero is reserved for never treated in the backend. Map observed dates or
+    # zero-based periods and their actual treatment cohorts together.
+    times = sorted(data[time].unique())
+    mapping = {value: i + 1 for i, value in enumerate(times)}
+    nonmissing = data[cohort].notna()
+    if not data.loc[nonmissing, cohort].isin(times).all():
+        raise ValueError("Treatment cohorts must be observed time values; use NaN for never treated")
+    data[time] = data[time].map(mapping)
+    data[cohort] = data[cohort].map(mapping).fillna(0)
+    # IDs are labels; provide an invertible local encoding to numeric backend.
+    data[unit] = pd.factorize(data[unit], sort=True)[0] + 1
+    _cs_covariate_formula(spec)
+    for col in spec.control_cols or []:
+        data[col] = data[col].astype(float)
+    return data
+
+
 @make_transformable
 def fit_callaway_santanna_estimator(spec: StaggeredDiDSpec) -> StaggeredDiDSpec:
     """
@@ -625,33 +486,24 @@ def fit_callaway_santanna_estimator(spec: StaggeredDiDSpec) -> StaggeredDiDSpec:
     Returns:
         StaggeredDiDSpec with fitted model
     """
+    # A shared specification can feed several independent graph branches.
+    spec = copy.copy(spec)
+    backend_spec, column_mapping = _cs_backend_spec(spec)
     
     
     # Extract necessary information from spec
     data = spec.data
-    outcome_col = spec.outcome_col
-    time_col = spec.time_col
-    unit_col = spec.unit_col
-    treatment_time_col = spec.treatment_time_col
+    outcome_col = backend_spec.outcome_col
+    time_col = backend_spec.time_col
+    unit_col = backend_spec.unit_col
+    treatment_time_col = backend_spec.treatment_time_col
     control_cols = spec.control_cols if hasattr(spec, 'control_cols') and spec.control_cols else []
     formula = spec.formula
 
     # Prepare data for csdid format
-    data_cs = data.copy()
+    data_cs = _prepare_cs_data(backend_spec)
 
 
-    for val in data_cs[treatment_time_col].values:
-        if val == 0:
-            raise ValueError(f"Treatment time column {treatment_time_col} cannot have 0's")
-        else:
-            pass
-    for val in data_cs[time_col].values:
-        if val == 0:
-            raise ValueError(f"Time column {time_col} cannot have 0's")
-        else:
-            pass
-
-    
     # Ensure never-treated units have 0 in treatment_time_col, not NaN
     # This is required for the Callaway & Sant'Anna estimator
     data_cs[treatment_time_col] = data_cs[treatment_time_col].fillna(0)
@@ -667,7 +519,7 @@ def fit_callaway_santanna_estimator(spec: StaggeredDiDSpec) -> StaggeredDiDSpec:
         gname=treatment_time_col,
         data=data_cs,
         control_group=['nevertreated'],
-        xformla=None,
+        xformla=_cs_covariate_formula(backend_spec),
         panel=True,
         allow_unbalanced_panel=True,
         anticipation=0,
@@ -683,7 +535,6 @@ def fit_callaway_santanna_estimator(spec: StaggeredDiDSpec) -> StaggeredDiDSpec:
     att_gt.summ_attgt(n=4)
     
     # Create separate copies for each aggregation to avoid overwriting
-    import copy
     
     # Compute aggregated treatment effects
     # Overall effect
@@ -704,6 +555,7 @@ def fit_callaway_santanna_estimator(spec: StaggeredDiDSpec) -> StaggeredDiDSpec:
         'overall_effect': att_gt_overall,
         'dynamic_effects': att_gt_dynamic,
         'group_effects': att_gt_group,
+        'column_mapping': column_mapping,
         'control_group': 'never_treated',
         'estimator': 'callaway_santanna_csdid'
     }
@@ -725,19 +577,22 @@ def fit_callaway_santanna_nyt_estimator(spec: StaggeredDiDSpec) -> StaggeredDiDS
     Returns:
         StaggeredDiDSpec with fitted model
     """
+    # A shared specification can feed several independent graph branches.
+    spec = copy.copy(spec)
+    backend_spec, column_mapping = _cs_backend_spec(spec)
     
     
     # Extract necessary information from spec
     data = spec.data
-    outcome_col = spec.outcome_col
-    time_col = spec.time_col
-    unit_col = spec.unit_col
-    treatment_time_col = spec.treatment_time_col
+    outcome_col = backend_spec.outcome_col
+    time_col = backend_spec.time_col
+    unit_col = backend_spec.unit_col
+    treatment_time_col = backend_spec.treatment_time_col
     control_cols = spec.control_cols if hasattr(spec, 'control_cols') and spec.control_cols else []
     formula = spec.formula
 
     # Prepare data for csdid format
-    data_cs = data.copy()
+    data_cs = _prepare_cs_data(backend_spec)
     
     # Ensure never-treated units have 0 in treatment_time_col, not NaN
     # This is required for the Callaway & Sant'Anna estimator
@@ -751,7 +606,7 @@ def fit_callaway_santanna_nyt_estimator(spec: StaggeredDiDSpec) -> StaggeredDiDS
         gname=treatment_time_col,
         data=data_cs,
         control_group=['notyettreated'],
-        xformla=None,
+        xformla=_cs_covariate_formula(backend_spec),
         panel=True,
         allow_unbalanced_panel=True,
         anticipation=0,
@@ -767,7 +622,6 @@ def fit_callaway_santanna_nyt_estimator(spec: StaggeredDiDSpec) -> StaggeredDiDS
     att_gt.summ_attgt(n=4)
     
     # Create separate copies for each aggregation to avoid overwriting
-    import copy
     
     # Compute aggregated treatment effects
     # Overall effect
@@ -788,7 +642,8 @@ def fit_callaway_santanna_nyt_estimator(spec: StaggeredDiDSpec) -> StaggeredDiDS
         'overall_effect': att_gt_overall,
         'dynamic_effects': att_gt_dynamic,
         'group_effects': att_gt_group,
-        'control_group': 'never_treated',
+        'column_mapping': column_mapping,
+        'control_group': 'not_yet_treated',
         'estimator': 'callaway_santanna_csdid'
     }
     
@@ -810,28 +665,27 @@ def fit_synthdid_estimator(spec) -> object:
     Returns:
         SynthDIDSpec with fitted model (SynthDIDEstimate object)
     """
+    # A shared specification can feed several independent graph branches.
+    spec = copy.copy(spec)
     
     
     # Extract matrices from spec
     Y = spec.Y
     N0 = spec.N0
     T0 = spec.T0
-    X = None  # TODO: Allow to use covariates that are not the matching variables
+    X = spec.X
     
     # Fit the synthetic DiD model
     # Fit the model and get point estimate
     estimate = synthdid_estimate(Y, N0, T0, X=X)
     
-    # Calculate standard error using placebo method
-    se_result = synthdid_se(estimate, method='placebo')
-    se = se_result['se']
-    
-    # Calculate confidence intervals
-    ci_lower = float(estimate) - 1.96 * se
-    ci_upper = float(estimate) + 1.96 * se
-    
-    print(f"Point estimate: {float(estimate):.2f}")
-    print(f"95% CI ({ci_lower:.2f}, {ci_upper:.2f})")
+    # Inference needs enough never-treated donors; preserve the point estimate
+    # and explicitly report unavailable uncertainty otherwise.
+    if N0 > len(Y) - N0:
+        estimate.inference = synthdid_se(estimate, method='placebo', random_state=42)
+    else:
+        estimate.inference = {'status': 'unavailable', 'se': None, 'ci': None,
+                              'reason': 'Placebo inference requires more donors than treated units.'}
 
     # Store results
     spec.model = estimate  # Store the actual SynthDIDEstimate object
@@ -850,11 +704,13 @@ def fit_panel_ols(spec: BaseSpec) -> BaseSpec:
     Returns:
         Specification with model field set to the fitted PanelOLS model
     """
+    # A shared specification can feed several independent graph branches.
+    spec = copy.copy(spec)
     data = spec.data
     
     # Create MultiIndex with standard column names
     if not isinstance(data.index, pd.MultiIndex):
-        data_indexed = data.set_index(['id_unit', 't'])
+        data_indexed = data.set_index([spec.unit_col, spec.time_col])
     else:
         data_indexed = data.copy()
     
@@ -889,11 +745,13 @@ def fit_did_panel(spec: BaseSpec) -> BaseSpec:
     Returns:
         Specification with model field set to the fitted PanelOLS model for DiD
     """
+    # A shared specification can feed several independent graph branches.
+    spec = copy.copy(spec)
     data = spec.data
     
     # Create MultiIndex with standard column names
     if not isinstance(data.index, pd.MultiIndex):
-        data_indexed = data.set_index(['id_unit', 't'])
+        data_indexed = data.set_index([spec.unit_col, spec.time_col])
     else:
         data_indexed = data.copy()
     
@@ -928,11 +786,13 @@ def fit_random_effects(spec: BaseSpec) -> BaseSpec:
     Returns:
         Specification with model field set to the fitted RandomEffects model
     """
+    # A shared specification can feed several independent graph branches.
+    spec = copy.copy(spec)
     data = spec.data
     
     # Create MultiIndex with standard column names
     if not isinstance(data.index, pd.MultiIndex):
-        data_indexed = data.set_index(['id_unit', 't'])
+        data_indexed = data.set_index([spec.unit_col, spec.time_col])
     else:
         data_indexed = data.copy()
     
@@ -978,11 +838,13 @@ def fit_first_difference(spec: BaseSpec) -> BaseSpec:
     Returns:
         Specification with model field set to the fitted FirstDifferenceOLS model
     """
+    # A shared specification can feed several independent graph branches.
+    spec = copy.copy(spec)
     data = spec.data
     
     # Create MultiIndex with standard column names
     if not isinstance(data.index, pd.MultiIndex):
-        data_indexed = data.set_index(['id_unit', 't'])
+        data_indexed = data.set_index([spec.unit_col, spec.time_col])
     else:
         data_indexed = data.copy()
     
@@ -1030,11 +892,13 @@ def fit_between_estimator(spec: BaseSpec) -> BaseSpec:
     Returns:
         Specification with model field set to the fitted BetweenOLS model
     """
+    # A shared specification can feed several independent graph branches.
+    spec = copy.copy(spec)
     data = spec.data
     
     # Create MultiIndex with standard column names
     if not isinstance(data.index, pd.MultiIndex):
-        data_indexed = data.set_index(['id_unit', 't'])
+        data_indexed = data.set_index([spec.unit_col, spec.time_col])
     else:
         data_indexed = data.copy()
     
@@ -1078,6 +942,8 @@ def fit_hainmueller_synth_estimator(spec: SynthDIDSpec) -> SynthDIDSpec:
     Returns:
         SynthDIDSpec with fitted model (Synth object)
     """
+    # A shared specification can feed several independent graph branches.
+    spec = copy.copy(spec)
     
     # Extract information from spec
     data = spec.data.copy()
@@ -1092,6 +958,8 @@ def fit_hainmueller_synth_estimator(spec: SynthDIDSpec) -> SynthDIDSpec:
 
     # Find the treated unit and treatment period
     treated_units = data[data[treatment_col] == 1][unit_col].unique()
+    if len(treated_units) != 1:
+        raise ValueError("Hainmueller synthetic control requires exactly one treated unit")
 
     treated_unit = treated_units[0]
     
@@ -1134,28 +1002,42 @@ def fit_hainmueller_synth_estimator(spec: SynthDIDSpec) -> SynthDIDSpec:
 
 
 @make_transformable
-def fit_hainmueller_placebo_test(spec: SynthDIDSpec, n_placebo: int = 1) -> SynthDIDSpec:
+def fit_hainmueller_placebo_test(
+    spec: SynthDIDSpec, n_placebo: int = 1, random_state: Optional[int] = 42
+) -> SynthDIDSpec:
     """
-    Perform in-space  and in-time placebo test for Hainmueeller Synthetic Control method.
-    """
-    
-        # Choose number of in space placebo tests
-    spec.hainmueller_model.in_space_placebo(n_placebo)
+    Perform in-space and in-time placebo tests with a reproducible time draw.
 
+    ``random_state`` controls the local placebo-period draw; the fitted model's
+    copied generator controls its optimization. Neither changes NumPy's global
+    random state.
+    """
+    # A shared specification can feed several independent graph branches.
+    spec = copy.copy(spec)
+    spec.hainmueller_model = copy.deepcopy(spec.hainmueller_model)
     min_period = spec.data[spec.time_col].min()
     treatment_period = spec.data[spec.data[spec.treatment_cols[0]] == 1][spec.time_col].min()
-    
-    #Choose random placebo period between min and max, leaving buffer at edges
-    buffer = (treatment_period - min_period) // 4  # Use 1/4 of range as buffer
-    placebo_period = np.random.randint(min_period + buffer, treatment_period - buffer)
+    periods = np.sort(spec.data[spec.time_col].unique())
+    eligible = periods[(periods > min_period) & (periods < treatment_period)]
+    if not len(eligible):
+        raise ValueError("In-time placebo requires at least two observed pre-treatment periods")
+    # Choose an observed period with pretreatment data on either side, retaining
+    # the existing interior buffer when the observed grid permits it.
+    buffer = (treatment_period - min_period) // 4
+    interior = eligible[(eligible >= min_period + buffer) &
+                        (eligible < treatment_period - buffer)]
+    candidates = interior if len(interior) else eligible
+    placebo_period = np.random.default_rng(random_state).choice(candidates).item()
+    spec.hainmueller_placebo_metadata = {
+        'random_state': random_state, 'placebo_period': placebo_period,
+    }
+
+    spec.hainmueller_model.in_space_placebo(n_placebo)
 
     print(f"Placebo period: {placebo_period}")
     spec.hainmueller_model.in_time_placebo(placebo_period)
 
 
-    
     return spec
     
-
-
 

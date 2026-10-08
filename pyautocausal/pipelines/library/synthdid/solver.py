@@ -281,7 +281,7 @@ def sc_weight_fw_covariates(Y: np.ndarray, X: Optional[np.ndarray] = None,
     Y_beta = Y - contract3(X, beta)
     weights = update_weights(Y_beta, lambda_weights, omega_weights)
     
-    while t < max_iter and (t < 2 or abs(vals[t-1] - vals[t]) > min_decrease**2):
+    while t < max_iter and (t < 2 or abs(vals[t-2] - vals[t-1]) > min_decrease**2):
         t += 1
         
         # Update beta with gradient step
@@ -289,7 +289,7 @@ def sc_weight_fw_covariates(Y: np.ndarray, X: Optional[np.ndarray] = None,
             grad_beta = np.zeros(X.shape[2])
             for i in range(X.shape[2]):
                 Xi = X[:, :, i]
-                grad_beta[i] = (
+                grad_beta[i] = -(
                     weights['err_lambda'].T @ Xi[:N0, :] @ np.concatenate([weights['lambda'], [-1]]) / N0 +
                     weights['err_omega'].T @ Xi[:, :T0].T @ np.concatenate([weights['omega'], [-1]]) / T0
                 )
@@ -301,6 +301,8 @@ def sc_weight_fw_covariates(Y: np.ndarray, X: Optional[np.ndarray] = None,
         # Update weights
         weights = update_weights(Y_beta, weights['lambda'], weights['omega'])
         vals[t-1] = weights['val']
+        if not np.isfinite(vals[t-1]):
+            raise ValueError("Covariate optimization diverged; rescale covariates and inspect the design")
     
     return {
         'lambda': weights['lambda'],

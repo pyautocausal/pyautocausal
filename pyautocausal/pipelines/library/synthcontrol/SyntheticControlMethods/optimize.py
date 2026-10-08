@@ -151,14 +151,15 @@ class Optimize(object):
         
         #Define the objective
 
-        #PROBLEM: treated_synth_difference = cvx.sum(V @ cvx.square(treated_covariates.T - control_covariates @ w)) runs better for normal sc,
-        #but it doesnt work at all for in-time placebos, this probably means I am messing up the dimensionality somewhere in the processing
-        #This is a work-around that works, but it ain't pretty
-        if placebo == 'in-time':
-            treated_synth_difference = cvx.sum(V @ cvx.square(treated_covariates - control_covariates @ w))
-        else:
-            treated_synth_difference = cvx.sum(V @ cvx.square(treated_covariates.T - control_covariates @ w))
-        
+        # Each predictor contributes one treated-versus-synthetic residual.
+        # Both sides have shape (n_covariates, 1); transposing the treated
+        # vector would broadcast it into a matrix and compare unrelated
+        # covariates against one another.
+        treated_predictors = np.asarray(treated_covariates).reshape(-1, 1)
+        treated_synth_difference = cvx.sum(
+            V @ cvx.square(treated_predictors - control_covariates @ w)
+        )
+
         pairwise_difference = cvx.sum(V @ (cvx.square(pairwise_difference) @ w))
         objective = cvx.Minimize(treated_synth_difference + pen_coef*pairwise_difference)
 
