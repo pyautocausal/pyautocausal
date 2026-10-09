@@ -4,7 +4,7 @@ import pandas as pd
 import json
 import pickle
 from .output_handler import OutputHandler
-import matplotlib.pyplot as plt
+from .serialization import jsonify
 class LocalOutputHandler(OutputHandler):
     """Handles saving outputs to local filesystem"""
     
@@ -29,12 +29,11 @@ class LocalOutputHandler(OutputHandler):
     
     def save_json(self, name: str, data: Any):
         output_path = self._get_output_path(name, ".json")
-        if isinstance(data, (pd.DataFrame, pd.Series)):
-            data.to_json(output_path)
-        else:
-            with open(output_path, 'w') as f:
-                json.dump(data, f)
-    
+        # Validate/convert before opening the destination, preserving existing
+        # files if serialization fails.
+        payload = json.dumps(jsonify(data), allow_nan=False)
+        output_path.write_text(payload, encoding="utf-8")
+
     def save_pickle(self, name: str, data: Any):
         output_path = self._get_output_path(name, ".pkl")
         with open(output_path, 'wb') as f:
@@ -47,7 +46,7 @@ class LocalOutputHandler(OutputHandler):
     
     def save_png(self, name: str, data: Any):
         output_path = self._get_output_path(name, ".png")
-        plt.savefig(output_path, format='png')
+        data.savefig(output_path, format='png')
     
     def save_bytes(self, name: str, data: Any):
         output_path = self._get_output_path(name, ".bytes")

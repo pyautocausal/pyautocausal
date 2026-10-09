@@ -20,41 +20,82 @@ from pyautocausal.data_cleaner_interface.autocleaner import AutoCleaner
 from pyautocausal.persistence.parameter_mapper import make_transformable
 
 
-def create_basic_cleaner(df: pd.DataFrame) -> pd.DataFrame:
-    """Create and execute basic data cleaning for both cross-sectional and panel data."""
-    autocleaner = (
-        AutoCleaner()
+def create_basic_cleaner(
+    df: pd.DataFrame, *, missing_strategy: str = "drop_rows", max_missing_fraction: float = 0.1
+) -> pd.DataFrame:
+    """Clean required fields and validate both treatment groups.
+
+    Missingness policy is explicit: ``drop_rows`` drops incomplete observations
+    up to the per-column threshold; ``reject`` refuses any missing values.
+    Unit identifiers are preserved as supplied, including string labels.
+    """
+    _validate_missing_policy(missing_strategy, max_missing_fraction)
+    unit_column = "id_unit" if "id_unit" in df.columns else None
+    # Apply the missingness policy before attempting integer treatment casts.
+    complete = (
+        AutoCleaner(unit_column=unit_column)
         .check_required_columns(required_columns=["treat", "y"])
+        .check_binary_treatment(treatment_column="treat", allow_missing=True)
+        .check_for_missing_data(strategy=missing_strategy, check_columns=["treat", "y"],
+                                max_missing_fraction=max_missing_fraction)
+        .clean(df)
+    )
+    return (
+        AutoCleaner(unit_column=unit_column)
         .check_column_types(expected_types={"treat": int, "y": float})
         .check_binary_treatment(treatment_column="treat")
-        .check_for_missing_data(strategy="drop_rows", check_columns=["treat", "y"])
         .infer_and_convert_categoricals(ignore_columns=["treat", "y", "t", "id_unit"])
-        .drop_duplicates()
+        .check_causal_design()
+        .clean(complete)
     )
-    return autocleaner.clean(df)
 
 
-def create_panel_cleaner(df: pd.DataFrame) -> pd.DataFrame:
-    """Create and execute panel-specific data cleaning."""
-    autocleaner = (
-        AutoCleaner()
-        .check_required_columns(required_columns=["t", "id_unit"])
+def _validate_missing_policy(missing_strategy: str, max_missing_fraction: float) -> None:
+    if missing_strategy not in {"drop_rows", "reject"}:
+        raise ValueError("missing_strategy must be 'drop_rows' or 'reject'")
+    if not 0 <= max_missing_fraction <= 1:
+        raise ValueError("max_missing_fraction must be between 0 and 1")
+
+
+def create_panel_cleaner(
+    df: pd.DataFrame, *, missing_strategy: str = "drop_rows", max_missing_fraction: float = 0.1
+) -> pd.DataFrame:
+    """Clean panel data, preserving unit labels and recording time mappings.
+
+    Revalidate unique unit/time pairs, absorbing treatment, pre-treatment data,
+    and comparison support after dropping incomplete rows. Identical panel
+    records are ambiguous and require explicit resolution by the caller.
+    """
+    _validate_missing_policy(missing_strategy, max_missing_fraction)
+    complete = (
+        AutoCleaner(unit_column="id_unit")
+        .check_required_columns(required_columns=["treat", "y", "t", "id_unit"])
+        .check_for_missing_data(strategy=missing_strategy, max_missing_fraction=max_missing_fraction)
+        .clean(df)
+    )
+    return (
+        AutoCleaner(unit_column="id_unit")
         .standardize_time_periods(treatment_column="treat", time_column="t")
-        .check_for_missing_data(strategy="drop_rows")
         .infer_and_convert_categoricals(ignore_columns=["treat", "y", "t", "id_unit"])
-        .drop_duplicates()
+        .check_causal_design(unit_column="id_unit", time_column="t")
+        .clean(complete)
     )
-    return autocleaner.clean(df)
 
 
-def create_cross_sectional_cleaner(df: pd.DataFrame) -> pd.DataFrame:
-    """Create and execute cross-sectional specific data cleaning.""" 
-    autocleaner = (
-        AutoCleaner()
-        .check_for_missing_data(strategy="drop_rows")
+def create_cross_sectional_cleaner(
+    df: pd.DataFrame, *, missing_strategy: str = "drop_rows", max_missing_fraction: float = 0.1
+) -> pd.DataFrame:
+    """Clean cross-sectional model columns and validate the remaining groups."""
+    _validate_missing_policy(missing_strategy, max_missing_fraction)
+    return (
+        AutoCleaner(unit_column="id_unit" if "id_unit" in df.columns else None)
+        .check_required_columns(required_columns=["treat", "y"])
+        .check_for_missing_data(strategy=missing_strategy, max_missing_fraction=max_missing_fraction)
         .infer_and_convert_categoricals(ignore_columns=["treat", "y", "t", "id_unit"])
+        .check_causal_design()
+        .clean(df)
     )
-    return autocleaner.clean(df)
+
 
 def _create_shared_head(graph: ExecutableGraph):
     """Creates the shared input and basic cleaning nodes for any graph."""
@@ -124,13 +165,13 @@ def configure_panel_decision_paths(graph: ExecutableGraph) -> None:
 
 # Some utils for the graph
 @make_transformable
-def basic_clean_node(df: pd.DataFrame) -> pd.DataFrame:
-    return create_basic_cleaner(df)
+def basic_clean_node(df: pd.DataFrame, missing_strategy: str = "drop_rows", max_missing_fraction: float = 0.1) -> pd.DataFrame:
+    return create_basic_cleaner(df, missing_strategy=missing_strategy, max_missing_fraction=max_missing_fraction)
 
 @make_transformable
-def panel_clean_node(data_input: pd.DataFrame) -> pd.DataFrame:
-    return create_panel_cleaner(data_input)
+def panel_clean_node(data_input: pd.DataFrame, missing_strategy: str = "drop_rows", max_missing_fraction: float = 0.1) -> pd.DataFrame:
+    return create_panel_cleaner(data_input, missing_strategy=missing_strategy, max_missing_fraction=max_missing_fraction)
 
 @make_transformable
-def cross_sectional_clean_node(data_input: pd.DataFrame) -> pd.DataFrame:
-    return create_cross_sectional_cleaner(data_input)
+def cross_sectional_clean_node(data_input: pd.DataFrame, missing_strategy: str = "drop_rows", max_missing_fraction: float = 0.1) -> pd.DataFrame:
+    return create_cross_sectional_cleaner(data_input, missing_strategy=missing_strategy, max_missing_fraction=max_missing_fraction)

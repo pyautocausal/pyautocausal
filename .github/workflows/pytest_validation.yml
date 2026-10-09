@@ -2,38 +2,99 @@ name: Run Tests
 
 on:
   pull_request:
-    branches: [ main ]
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
+    name: Tests (Python ${{ matrix.python }})
     runs-on: ubuntu-latest
-    
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.11', '3.12']
+    env:
+      MPLBACKEND: Agg
+      JUPYTER_PREFER_ENV_PATH: '1'
+      POETRY_VIRTUALENVS_IN_PROJECT: 'true'
     steps:
-      - uses: actions/checkout@v3
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-          cache: 'pip'  # Enable caching of pip dependencies
-      
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
-        with:
-          version: 1.5.1
-          virtualenvs-create: true
-          virtualenvs-in-project: true
-      
-      - name: Load cached dependencies
-        id: cached-poetry-dependencies
-        uses: actions/cache@v3
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install poetry==2.1.1
+      - uses: actions/cache@v4
         with:
           path: .venv
-          key: venv-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
-      
-      - name: Install dependencies
-        if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
-        run: poetry install --no-interaction
-      
-      - name: Run tests
-        run: poetry run pytest tests/
+          key: venv-${{ runner.os }}-${{ matrix.python }}-${{ hashFiles('poetry.lock', 'pyproject.toml') }}
+      - run: poetry install --all-extras --no-interaction
+      - run: poetry check --lock
+      - run: poetry run pytest tests/ -m 'not scientific' --junitxml=test-results.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-${{ matrix.python }}
+          path: test-results.xml
+
+  wheel:
+    name: Wheel (${{ matrix.python }}, ${{ matrix.extras }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.11', '3.12']
+        extras: [base, all]
+    env:
+      MPLBACKEND: Agg
+      JUPYTER_PREFER_ENV_PATH: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install build
+      - run: python -m build
+      - name: Install wheel into a clean environment
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/wheel-env"
+          wheel=$(realpath dist/*.whl)
+          if [ '${{ matrix.extras }}' = all ]; then
+            "$RUNNER_TEMP/wheel-env/bin/python" -m pip install "$wheel[all]"
+          else
+            "$RUNNER_TEMP/wheel-env/bin/python" -m pip install "$wheel"
+          fi
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/wheel-env/bin/python" -I "$GITHUB_WORKSPACE/scripts/smoke_installed.py" --mode '${{ matrix.extras }}'
+      - name: Test installed package with resolved dependencies
+        if: matrix.extras == 'all'
+        shell: bash
+        run: |
+          "$RUNNER_TEMP/wheel-env/bin/python" -m pip install 'pytest>=8,<9'
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/wheel-env/bin/python" -I -m pytest "$GITHUB_WORKSPACE/tests/" -m 'not scientific' --junitxml=wheel-results.xml
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.extras == 'all'
+        with:
+          name: wheel-results-${{ matrix.python }}
+          path: ${{ runner.temp }}/wheel-results.xml
+
+  required:
+    name: Required checks
+    if: always()
+    needs: [test, wheel]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every matrix job to pass
+        run: |
+          test '${{ needs.test.result }}' = success
+          test '${{ needs.wheel.result }}' = success

@@ -13,7 +13,12 @@ from ..persistence.output_config import OutputConfig
 import networkx as nx
 import inspect
 import logging
+import copy
 from networkx import DiGraph
+
+
+class IncompleteExecutionError(RuntimeError):
+    """Execution stalled or encountered previously failed nodes."""
 
 
 class ExecutableGraph(nx.DiGraph):
@@ -100,58 +105,96 @@ class ExecutableGraph(nx.DiGraph):
     def save_node_output(self, node: Node):
         """Save node output if configured to do so"""
         from .nodes import InputNode  # Import here to avoid circular import
-        if self.save_node_outputs and self.output_handler is not None and ~isinstance(node, InputNode): # Input nodes are not saved
+        if self.save_node_outputs and self.output_handler is not None and not isinstance(node, InputNode): # Input nodes are not saved
             if (
                 getattr(node, 'output_config', None) is not None
                 and node.output is not None
             ):
-                output_filename = getattr(node.output_config, 'output_filename', node.name)
+                output_filename = node.output_config.output_filename or node.name
                 if node.output_config.output_type is None:
                     raise ValueError(f"Output type is not set for node {node.name}")
                 self.output_handler.save(output_filename, node.output_to_save, node.output_config.output_type)
             else:
                 self.logger.warning(f"Node {node.name} output not saved because no output config was provided")
             
+    def reset(self):
+        """Clear results and inputs before reusing a graph for a new analysis.
+
+        Execution resumes pending nodes by default. Call reset explicitly to
+        rerun completed or failed nodes; runtime configuration is preserved.
+        """
+        from .nodes import InputNode, DecisionNode
+        if self.get_running_nodes():
+            raise RuntimeError("Cannot reset a graph while nodes are running")
+        for node in self.nodes:
+            node.state = NodeState.PENDING
+            node.output = Result()
+            node.output_to_save = None
+            node.predecessor_outputs = {}
+            node.execution_count = 0
+            node.error = None
+            if isinstance(node, InputNode):
+                node.input_set = False
+                node.action_function = lambda: None
+            if isinstance(node, DecisionNode):
+                node.decision_result = None
+        for _, _, edge in self.edges(data=True):
+            edge['traversable'] = True
+        return self
+
     def execute_graph(self):
-        from .nodes import InputNode
-        """Execute all nodes in the graph using a breadth-first approach."""
-        # Find all start nodes (input nodes or nodes with no predecessors)
-        start_nodes = [node for node in self.nodes() 
-                      if isinstance(node, Node) and not list(self.predecessors(node))]
-        
-        if not start_nodes:
-            self.logger.warning("No start nodes found in graph")
-            return
-        
-        # Initialize a queue with start nodes
-        queue = start_nodes.copy()
-        
-        # Process nodes in BFS order
-        while queue:
-            current_node = queue.pop(0)
-            
-            # Skip if already processed
-            if current_node.state.is_terminal():
-                continue
-            
-            # Execute regular node
-            current_node.execute()
-            self.save_node_output(current_node)
-            
-            # If completed successfully, mark outgoing edges as traversable
-            if current_node.is_completed():
-                # Add nodes that are now ready to the queue
-                for successor in self.successors(current_node):
-                    if self._is_node_ready_to_queue(successor) and successor not in queue:
-                        queue.append(successor)
-                    
-        # Check if all nodes are in terminal state
+        """Execute ready nodes deterministically until every node is terminal.
+
+        Decisions can skip entire paths, making joins ready without executing
+        their direct predecessors. Recompute readiness after each execution.
+        Completed nodes are not rerun. A stalled or failed run raises an error.
+        """
+        if not nx.is_directed_acyclic_graph(self):
+            raise IncompleteExecutionError("Cannot execute a graph containing a cycle")
+        self.validate_node_graph_consistency()
+        while True:
+            ready = next((node for node in self.nodes if self.is_node_ready(node)), None)
+            if ready is None:
+                break
+            try:
+                ready.execute()
+                self.save_node_output(ready)
+            except Exception as error:
+                if ready.is_completed():
+                    ready.mark_failed()
+                    ready.error = {'type': type(error).__name__, 'message': str(error),
+                                   'phase': 'saving_output'}
+                try:
+                    self._save_execution_report()
+                except Exception:
+                    self.logger.exception("Could not save diagnostics for the failed run")
+                raise
         incomplete = self.get_incomplete_nodes()
-        if incomplete:
-            self.logger.warning(
-                f"Graph execution completed with {len(incomplete)} incomplete nodes: "
-                f"{[node.name for node in incomplete]}"
+        failed = [node.name for node in self.nodes if node.state == NodeState.FAILED]
+        self._save_execution_report()
+        if incomplete or failed:
+            blocked = {
+                node.name: [pred.name for pred in self.predecessors(node)
+                            if not (pred.is_completed() or pred.is_passed())
+                            or not self.edges[pred, node].get('traversable', True)]
+                for node in sorted(incomplete, key=lambda node: node.name)
+            }
+            raise IncompleteExecutionError(
+                f"Graph execution did not finish. Failed nodes: {failed}; "
+                f"blocked nodes and prerequisites: {blocked}. "
+                "Correct the graph or inputs and call reset() before retrying a failed run."
             )
+        return self
+
+    def execution_report(self):
+        """Return serializable execution diagnostics and analysis provenance."""
+        from ..persistence.provenance import graph_execution_report
+        return graph_execution_report(self)
+
+    def _save_execution_report(self):
+        if self.save_node_outputs and self.output_handler is not None:
+            from ..persistence.output_types import OutputType
+            self.output_handler.save("execution_report", self.execution_report(), OutputType.JSON)
 
     def fit(self, **kwargs):
         """
@@ -234,7 +277,8 @@ class ExecutableGraph(nx.DiGraph):
             action_function=action_function,
             output_config=output_config,
             save_node=save_node,
-            display_function=display_function
+            display_function=display_function,
+            node_description=node_description
         )
         
         # Use add_node to handle the rest
@@ -373,6 +417,7 @@ class ExecutableGraph(nx.DiGraph):
                             Parameter(param_name, Parameter.KEYWORD_ONLY, annotation=dtype)
                         ])
                         pass_input.__annotations__ = {param_name: dtype, 'return': dtype}
+                        pass_input._notebook_passthrough = True
                         return pass_input
                     
                     new_node = NodeObject(
@@ -388,6 +433,7 @@ class ExecutableGraph(nx.DiGraph):
                 new_node = DecisionNode(
                     name=new_name,
                     condition=node.condition,
+                    node_description=node.node_description,
                 )
                 self.add_node_to_graph(new_node)
                 node_mapping[node] = new_node
@@ -395,8 +441,10 @@ class ExecutableGraph(nx.DiGraph):
                 new_node = NodeObject(
                     name=new_name,
                     action_function=node.action_function,
-                    output_config=node.output_config,
-                    save_node=bool(node.output_config)
+                    output_config=copy.deepcopy(node.output_config),
+                    save_node=bool(node.output_config),
+                    node_description=node.node_description,
+                    display_function=node.display_function,
                 )
                 self.add_node_to_graph(new_node)
                 node_mapping[node] = new_node
@@ -404,12 +452,25 @@ class ExecutableGraph(nx.DiGraph):
             else:
                 raise ValueError(f"Invalid node type: {type(node)}")
 
+        # Rebuild branch membership using cloned nodes, including renamed nodes.
+        for old_node, new_node in node_mapping.items():
+            if isinstance(old_node, DecisionNode):
+                new_node._ewt_nodes = {node_mapping[n] for n in old_node._ewt_nodes}
+                new_node._ewf_nodes = {node_mapping[n] for n in old_node._ewf_nodes}
+
         # Add edges from the original graph
         for u, v, data in other.edges(data=True):
             if u in node_mapping and v in node_mapping:  # Only add edges between nodes we've mapped
                 new_u = node_mapping[u]
                 new_v = node_mapping[v]
-                self.add_edge(new_u, new_v, **data)
+                edge_data = copy.deepcopy(data)
+                # Normal nodes emit their own name, so compose a rename with
+                # this edge's existing alias. Decisions forward names already
+                # resolved on their incoming edges; their aliases stay intact.
+                if not isinstance(u, DecisionNode):
+                    original_argument = edge_data.get('output_aliases', {}).get(u.name, u.name)
+                    edge_data['output_aliases'] = {new_u.name: original_argument}
+                self.add_edge(new_u, new_v, **edge_data)
 
         # Add the wiring edges
         for wiring in wirings:
@@ -493,26 +554,31 @@ class ExecutableGraph(nx.DiGraph):
         Returns:
             Dictionary mapping predecessor node names to their outputs
         """
-        predecessors = self.get_node_predecessors(node)
-
         all_outputs = {}
-        for predecessor in predecessors:
-            if predecessor.is_completed():
-                # Node has completed normally, use its output
-                if not isinstance(predecessor.output, Result):
-                    raise ValueError(f"Predecessor {predecessor.name} output is not a Result")
-                all_outputs.update(predecessor.output.result_dict)
-            elif predecessor.is_passed():
-                # Skip PASSED nodes - they don't contribute outputs
-                self.logger.info(f"Skipping PASSED node {predecessor.name} as a predecessor of {node.name}")
-                # Don't add any outputs for this node
+        providers = {}
+        for predecessor in self.predecessors(node):
+            if predecessor.is_passed():
                 continue
+            if not predecessor.is_completed():
+                raise ValueError(f"Predecessor {predecessor.name} is not completed or passed")
+            edge = self.edges[predecessor, node]
+            bindings = edge.get('argument_names')
+            if bindings:
+                value = predecessor.output.get_only_item()
+                outputs = {name: value for name in bindings}
             else:
-                # Unexpected state
-                raise ValueError(
-                    f"Predecessor {predecessor.name} is not in COMPLETED or PASSED state, "
-                    f"current state: {predecessor.state}"
-                )
+                aliases = edge.get('output_aliases', {})
+                outputs = {aliases.get(key, key): value
+                           for key, value in predecessor.output.result_dict.items()}
+            for name, value in outputs.items():
+                if name in all_outputs and (bindings or all_outputs[name] is not value):
+                    raise ValueError(
+                        f"Ambiguous argument '{name}' for node '{node.name}': "
+                        f"both '{providers[name]}' and '{predecessor.name}' completed. "
+                        "Alternative predecessors must select exactly one value."
+                    )
+                all_outputs[name] = value
+                providers[name] = predecessor.name
         return all_outputs
 
     def is_node_ready(self, node) -> bool:
@@ -605,39 +671,42 @@ class ExecutableGraph(nx.DiGraph):
                 )
         return True
     
-    def add_node_with_predecessors(self, node, predecessors: List[str]):
-        """
-        Add a node to the graph with connections to predecessor nodes.
-        
-        Args:
-            node: Node to add
-            predecessors: Dict mapping argument names to predecessor node names
-            
-        Returns:
-            The added node
-        """
-        if predecessors is None:
-            predecessors = {}
-        # First check if all predecessors are in the graph
-        for pred_name in predecessors:
-            if pred_name not in self._nodes_by_name:
-                raise ValueError(f"Predecessor node {pred_name} not found in graph")
-        
-        # Add node to graph
-        self.add_node_to_graph(node)
+    def add_node_with_predecessors(self, node, predecessors):
+        """Connect predecessors by name or explicit argument bindings.
 
-        # Add predecessors if specified
-        if predecessors:
-            for pred_name in predecessors:
-                # throws error if predecessor not found
-                pred_node = self.get(pred_name)
-                self.add_edge(pred_node, node)
-        
+        A list preserves predecessor output names. A dict maps function
+        arguments to a predecessor name or a list of alternative predecessor
+        names. Exactly one alternative must complete; skipped nodes contribute
+        no value. For example ``{'data': ['clean_a', 'clean_b']}``.
+        """
+        predecessors = predecessors or []
+        edges = {}
+        if isinstance(predecessors, dict):
+            for argument, sources in predecessors.items():
+                if isinstance(sources, str):
+                    sources = [sources]
+                if not sources:
+                    raise ValueError(f"No predecessors specified for argument '{argument}'")
+                for source in sources:
+                    edges.setdefault(source, []).append(argument)
+        else:
+            edges = {source: [] for source in predecessors}
+        for source in edges:
+            if source not in self._nodes_by_name:
+                raise ValueError(f"Predecessor node {source} not found in graph")
+        self.add_node_to_graph(node)
+        for source, arguments in edges.items():
+            attrs = {'argument_names': arguments} if arguments else {}
+            self.add_edge(self.get(source), node, **attrs)
         return self
-    
+
     def add_edge(self, u, v, **attr):
-        """Add an edge from u to v with traversable=False by default."""
-        attr['traversable'] = True
+        """Add a dependency, preserving explicit edge metadata."""
+        if u not in self or v not in self:
+            raise ValueError("Both nodes must be added to this graph before connecting them")
+        if u is v or nx.has_path(self, v, u):
+            raise ValueError("Adding this dependency would create a cycle")
+        attr.setdefault('traversable', True)
         super().add_edge(u, v, **attr)
 
     def _is_node_ready_to_queue(self, node) -> bool:
@@ -671,6 +740,7 @@ class ExecutableGraph(nx.DiGraph):
         condition: Callable,
         predecessors: Optional[List[str]] = None,
         save_node: bool = False,
+        node_description: Optional[str] = None,
     ):
         """
         Add a decision node to the graph.
@@ -690,6 +760,7 @@ class ExecutableGraph(nx.DiGraph):
         node = DecisionNode(
             name=name,
             condition=condition,
+            node_description=node_description,
         )
         
         # Use add_node to handle the rest

@@ -112,6 +112,7 @@ def _callable_to_spec(func: Callable) -> Dict[str, str]:
                     code.co_cellvars,
                 )
 
+            original_func = func
             func = types.FunctionType(
                 new_code,
                 func.__globals__,
@@ -119,6 +120,11 @@ def _callable_to_spec(func: Callable) -> Dict[str, str]:
                 func.__defaults__,
                 func.__closure__,
             )
+            func.__dict__.update(original_func.__dict__)
+            func.__annotations__ = original_func.__annotations__.copy()
+            func.__kwdefaults__ = original_func.__kwdefaults__
+            func.__qualname__ = original_func.__qualname__
+            func.__module__ = original_func.__module__
 
     except Exception:  # pragma: no cover – defensive; if anything goes wrong just pickle as-is
         pass
@@ -179,6 +185,11 @@ def graph_to_mapping(graph: ExecutableGraph) -> Dict[str, Any]:
         if isinstance(node, Node) and not isinstance(node, InputNode):
             info["action_function"] = _callable_to_spec(node.action_function)
 
+        if node.node_description is not None:
+            info["node_description"] = node.node_description
+        if node.display_function is not None:
+            info["display_function"] = _callable_to_spec(node.display_function)
+
         # Optional output config
         if getattr(node, "output_config", None):
             oc: OutputConfig = node.output_config  # type: ignore[assignment]
@@ -190,8 +201,9 @@ def graph_to_mapping(graph: ExecutableGraph) -> Dict[str, Any]:
         nodes_block.append(info)
 
     edges_block = [
-        {"from": u.name, "to": v.name}
-        for u, v in graph.edges()
+        {"from": u.name, "to": v.name,
+         **{key: value for key, value in data.items() if key != "traversable"}}
+        for u, v, data in graph.edges(data=True)
     ]
 
     return {"nodes": nodes_block, "edges": edges_block}
@@ -243,11 +255,15 @@ def mapping_to_graph(mapping: Dict[str, Any]) -> ExecutableGraph:
             g.add_node_to_graph(node_obj)
         else:
             raise ValueError(f"Unknown node kind: {kind}")
+        node_obj.node_description = nd.get("node_description", node_obj.node_description)
+        if "display_function" in nd:
+            node_obj.display_function = _spec_to_callable(nd["display_function"])
         tmp[name] = node_obj
 
     # Second pass: add edges
     for edge in mapping["edges"]:
-        g.add_edge(tmp[edge["from"]], tmp[edge["to"]])
+        g.add_edge(tmp[edge["from"]], tmp[edge["to"]],
+                   **{key: value for key, value in edge.items() if key not in ("from", "to")})
 
     # Third pass: rebuild decision branch metadata
     for nd in mapping["nodes"]:

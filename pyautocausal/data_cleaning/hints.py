@@ -91,9 +91,9 @@ class DropDuplicateRowsHint(CleaningHint):
 
 @dataclass
 class StandardizeTimePeriodHint(CleaningHint):
-    """Hint to standardize time periods relative to first treatment period."""
+    """Hint to map chronological time periods to positive consecutive integers."""
     time_column: str
-    value_mapping: Dict[str, int]  # original_value -> standardized_index (str keys for JSON serialization)
+    value_mapping: Dict[Any, int]  # Original value -> chronological index
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     @property
@@ -150,7 +150,6 @@ def create_legacy_hint(operation_type: str, **kwargs) -> Optional[CleaningHint]:
         return hint_class(
             time_column=kwargs.get("time_column", "time"),
             value_mapping=kwargs.get("value_mapping", {}),
-            treatment_start_period=kwargs.get("treatment_start_period", ""),
             metadata=kwargs.get("metadata", {})
         )
     

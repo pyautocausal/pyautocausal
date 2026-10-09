@@ -78,7 +78,7 @@ def test_autocleaner_fill_missing_strategy(sample_data_for_cleaning):
 
     assert cleaned_df['city'].isnull().sum() == 0
     assert (cleaned_df['city'] == fill_value).any()
-    # Note: Metadata is now logged automatically rather than returned 
+    # Note: Metadata is now logged automatically rather than returned
 
 
 def test_autocleaner_unified_logging():
@@ -90,7 +90,7 @@ def test_autocleaner_unified_logging():
     handler.setLevel(logging.INFO)
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
-    
+
     try:
         # Create test data with various issues
         data = pd.DataFrame({
@@ -99,10 +99,10 @@ def test_autocleaner_unified_logging():
             'category': ['A', 'B', 'A', 'C', 'B', 'A', 'C'],  # Should be categorical
             'duplicate_col': [1, 1, 1, 1, 1, 1, 1]  # Uniform values
         })
-        
+
         # Add a duplicate row
         data = pd.concat([data, data.iloc[[0]]], ignore_index=True)
-        
+
         # Create autocleaner
         autocleaner = (
             AutoCleaner()
@@ -111,31 +111,31 @@ def test_autocleaner_unified_logging():
             .infer_and_convert_categoricals(ignore_columns=["treat", "y"])
             .drop_duplicates(max_duplicate_fraction=0.15) # if max_duplicate_fraction is not set, the default is 0.05 which would cause the test to fail, since we have 1 in 8 rows that are duplicates
         )
-        
+
         # Test the unified clean() method
         cleaned_df = autocleaner.clean(data)
-        
+
         # Verify clean method returns DataFrame only
         assert isinstance(cleaned_df, pd.DataFrame)
-        
+
         # Verify data was properly cleaned
         assert len(cleaned_df) < len(data)  # Should have fewer rows due to missing data + duplicates
         assert cleaned_df['y'].isnull().sum() == 0  # No missing values
         assert not cleaned_df.duplicated().any()  # No duplicates
-        
+
         # Verify categorical conversion (but not for treat/y which are ignored)
         assert pd.api.types.is_categorical_dtype(cleaned_df['category'])
         assert not pd.api.types.is_categorical_dtype(cleaned_df['treat'])
         assert not pd.api.types.is_categorical_dtype(cleaned_df['y'])
-        
+
         # Verify logging behavior
         logged_content = log_capture.getvalue()
         assert "Data cleaning completed" in logged_content
         assert "operations performed" in logged_content
         assert "rows dropped" in logged_content
-        
+
         # Note: Metadata details are captured in logs, not returned
-        
+
     finally:
         # Clean up logging
         logger.removeHandler(handler)
@@ -146,49 +146,49 @@ def test_autocleaner_time_period_standardization():
     # Create test data with different time formats but consistent types
     data = pd.DataFrame({
         'unit': [1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3],
-        'time': ['2020-01-01', '2020-02-01', '2020-03-01', '2020-04-01', 
+        'time': ['2020-01-01', '2020-02-01', '2020-03-01', '2020-04-01',
                  '2020-01-01', '2020-02-01', '2020-03-01', '2020-04-01',
                  '2020-01-01', '2020-02-01', '2020-03-01', '2020-04-01'],
         'treatment': [0, 0, 1, 1, 0, 1, 1, 1, 0, 0, 0, 1],  # First treatment in 2020-02-01 (unit 2)
         'outcome': [10, 12, 15, 18, 8, 11, 14, 16, 9, 10, 11, 14]
     })
-    
+
     # Verify original data type
-    assert data['time'].dtype == 'object'  # Date strings are stored as object type
-    
+    assert pd.api.types.is_string_dtype(data['time'])
+
     # Create autocleaner with time period standardization
     autocleaner = (
         AutoCleaner()
         .standardize_time_periods(treatment_column="treatment", time_column="time")
     )
-    
+
     # Apply cleaning
     cleaned_df = autocleaner.clean(data)
-    
+
     # Verify that time column was standardized
     unique_times = sorted(cleaned_df['time'].unique())
     expected_times = [1,2,3,4]  # 2020-02-01 becomes 0 (first treatment)
     assert unique_times == expected_times
-    
+
     # CRITICAL: Verify the resultant data type is INTEGER, not Timedelta or any other type
     assert cleaned_df['time'].dtype == 'int64', f"Expected int64, got {cleaned_df['time'].dtype}"
     assert all(isinstance(val, (int, np.integer)) for val in cleaned_df['time']), "All time values should be integers"
-    
-    # Additional type safety checks  
+
+    # Additional type safety checks
     for time_val in cleaned_df['time']:
         assert not pd.api.types.is_timedelta64_dtype(type(time_val)), f"Time value {time_val} should not be Timedelta type"
         assert not pd.api.types.is_datetime64_dtype(type(time_val)), f"Time value {time_val} should not be datetime type"
-    
+
     # Verify that the mapping is correct for specific cases
     # Original 2020-02-01 should become 0 (first treatment period)
     # Original 2020-01-01 should become -1 (before first treatment)
     # Original 2020-03-01 should become 1 (after first treatment)
     # Original 2020-04-01 should become 2 (two periods after first treatment)
-    
+
     # Check specific rows to verify the mapping
     unit_2_data = cleaned_df[cleaned_df['unit'] == 2].sort_values('time')
     assert unit_2_data['time'].tolist() == [1,2,3,4]
-    
+
     # Verify treatment data is preserved
     assert cleaned_df['treatment'].tolist() == data['treatment'].tolist()
     assert cleaned_df['outcome'].tolist() == data['outcome'].tolist()
@@ -197,33 +197,33 @@ def test_autocleaner_time_period_standardization():
 
 def test_autocleaner_time_period_standardization_error_cases():
     """Test that time period standardization properly handles error cases."""
-    
+
     # Test 1: No treatment data (should raise error)
     data_no_treatment = pd.DataFrame({
         'unit': [1, 1, 1],
         'time': [1, 2, 3],
         'treatment': [0, 0, 0]  # No treatment==1
     })
-    
+
     autocleaner = AutoCleaner().standardize_time_periods()
-    
+
     with pytest.raises(Exception) as exc_info:
         autocleaner.clean(data_no_treatment)
-    
+
     assert "No treatment data found" in str(exc_info.value)
-    
+
     # Test 2: Mixed data types (should raise error)
     data_mixed_types = pd.DataFrame({
         'unit': [1, 1, 1],
         'time': [1, '2020-02-01', 3],  # Mixed int and string
         'treatment': [0, 1, 1]
     })
-    
+
     autocleaner = AutoCleaner().standardize_time_periods()
-    
+
     with pytest.raises(Exception) as exc_info:
         autocleaner.clean(data_mixed_types)
-    
+
     assert "mixed data types" in str(exc_info.value)
 
 
@@ -235,10 +235,10 @@ def test_autocleaner_time_period_standardization_with_integer_periods():
         'treatment': [0, 1, 1, 0, 0, 1],  # Treatment starts in period 2
         'outcome': [10, 15, 20, 12, 18, 25]
     })
-    
+
     autocleaner = AutoCleaner().standardize_time_periods()
     cleaned_df = autocleaner.clean(data)
-    
+
     # Expected mapping: 2->1, 3->2, 4->3
     expected_times = [1, 2, 3, 1, 2, 3]
-    assert cleaned_df['time'].tolist() == expected_times 
+    assert cleaned_df['time'].tolist() == expected_times

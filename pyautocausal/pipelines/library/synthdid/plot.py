@@ -67,7 +67,8 @@ def plot_synthdid(est, effect_curve=None, figsize=(10, 6), title=None,
     from .vcov import synthdid_se
     
     # Extract setup
-    Y = est.setup["Y"]
+    from .utils import contract3
+    Y = est.setup["Y"] - contract3(est.setup["X"], np.asarray(est.weights.get("beta", [])))
     N0 = est.setup["N0"]
     T0 = est.setup["T0"]
     weights = est.weights
@@ -84,9 +85,18 @@ def plot_synthdid(est, effect_curve=None, figsize=(10, 6), title=None,
     if effect_curve is None:
         effect_curve = synthdid_effect_curve(est)
     
-    # Calculate standard error for confidence interval
-    se_result = synthdid_se(est, method="placebo")
-    se = se_result["se"]
+    effect_curve = np.asarray(effect_curve)
+    if effect_curve.shape != (T1,) or not np.isfinite(effect_curve).all():
+        raise ValueError("effect_curve must have one finite value per post-treatment period")
+    if not 0 <= ci_level < 1:
+        raise ValueError("ci_level must be zero (disabled) or between zero and one")
+    se = None
+    if ci_level:
+        inference = getattr(est, 'inference', None)
+        if inference and inference.get('se') is not None:
+            se = inference['se']
+        elif N0 > N1:
+            se = synthdid_se(est, method="placebo", random_state=42)['se']
     
     # Create the plot
     fig, ax = plt.subplots(figsize=figsize)
@@ -175,8 +185,9 @@ def plot_synthdid(est, effect_curve=None, figsize=(10, 6), title=None,
     ax.scatter([post_time], [treated_post], color=treated_color, s=40, zorder=5)
     
     # Add confidence interval around the treatment effect
-    if ci_level > 0:
-        z_score = {0.90: 1.645, 0.95: 1.96, 0.99: 2.58}.get(ci_level, 1.96)
+    if ci_level > 0 and se is not None:
+        from scipy.stats import norm
+        z_score = norm.ppf((1 + ci_level) / 2)
         margin = z_score * se
         
         # Add CI lines for the treatment effect
@@ -191,53 +202,16 @@ def plot_synthdid(est, effect_curve=None, figsize=(10, 6), title=None,
             ax.plot(effect_x, effect_y_upper, color=guide_color, linestyle='--', alpha=0.3, linewidth=1)
             ax.plot(effect_x, effect_y_lower, color=guide_color, linestyle='--', alpha=0.3, linewidth=1)
     
-    # Add treatment effect visualization at the bottom
-    effect_size = treated_post - synthetic_post  # Should be close to est.estimate
-    
     if show_effect_area:
-        # Create effect area at the bottom of the plot during treatment period
-        # In the R implementation, this is shown from treatment time (T0) to post_time
-        
-        # Find the treatment time on the x-axis
-        treatment_time = time_points[T0]
-        
-        # Create the effect area similar to how the R implementation displays it
-        # Use fewer points for more jagged appearance
-        n_points = 20
-        x_points = np.linspace(treatment_time, post_time, n_points)
-        
-        # Create effect values with random variation to match the R plot's jagged appearance
-        np.random.seed(123)
-        # Start at 0, build up to effect size, with random variations
-        effect_y = np.zeros(n_points)
-        
-        # Use random walk for the effect curve to better match R implementation
-        # Start at 0
-        effect_y[0] = 0
-        # Build up to maximum effect size with random variations
-        for i in range(1, n_points):
-            if i < n_points / 2:
-                # First half: build up with increasing variance
-                max_effect = abs(effect_size) * (i / (n_points / 2)) * 0.8
-                effect_y[i] = effect_y[i-1] + np.random.uniform(-0.2, 0.5) * abs(effect_size) / n_points
-                # Ensure we're trending upward
-                effect_y[i] = max(effect_y[i], effect_y[i-1] * 0.9)
-                effect_y[i] = min(effect_y[i], max_effect)
-            else:
-                # Second half: maintain with more variance
-                effect_y[i] = effect_y[i-1] + np.random.uniform(-0.3, 0.3) * abs(effect_size) / n_points
-        
-        # Rescale to ensure the effect matches the estimate
-        max_val = np.max(effect_y)
-        if max_val > 0:
-            scale_factor = abs(effect_size) / max_val
-            effect_y = effect_y * scale_factor * 0.7  # Scale down slightly to match R plot
-        
-        # Fill the area between 0 and the jagged line
-        ax.fill_between(x_points, np.zeros(n_points), effect_y, color=effect_color, alpha=0.7)
-        
-        # Add horizontal line at 0 to anchor the effect area
-        ax.axhline(y=0, color='black', linestyle='-', linewidth=1)
+        # Plot the actual signed period effects; never fabricate a decorative
+        # random walk or discard the sign of the estimated effect.
+        ax.fill_between(time_points[T0:], 0, effect_curve,
+                        color=effect_color, alpha=0.7, label="Period treatment effect")
+        ax.plot(time_points[T0:], effect_curve, color=effect_color,
+                linewidth=1, label="Effect curve")
+        ax.axhline(y=0, color='black', linewidth=1)
+    if vertical_line:
+        ax.axvline(time_points[T0], color=guide_color, linestyle=':', label="Treatment begins")
     
     # Add arrow showing the treatment effect
     if show_arrow:
@@ -289,10 +263,11 @@ def plot_synthdid(est, effect_curve=None, figsize=(10, 6), title=None,
             ax.legend(loc='upper right')
     
     # Add estimate text
-    est_text = f"Estimate: {est.estimate:.2f} (SE: {se:.2f})"
+    uncertainty = f"SE: {se:.2f}" if se is not None else "uncertainty unavailable"
+    est_text = f"Estimate: {est.estimate:.2f} ({uncertainty})"
     ax.text(0.05, 0.95, est_text, transform=ax.transAxes, 
             bbox=dict(facecolor='white', alpha=0.8, boxstyle='round'),
             verticalalignment='top')
 
     
-    return fig, ax 
+    return fig, ax

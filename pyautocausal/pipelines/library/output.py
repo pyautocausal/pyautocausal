@@ -130,7 +130,7 @@ def write_hainmueller_summary(spec, output_config: Optional[OutputConfig] = None
     summary_lines.append("")
 
     summary_lines.append("=" * 60)
-    
+
     # Join all lines
     summary_text = "\n".join(summary_lines)
     
@@ -160,6 +160,12 @@ def write_balance_summary_table(spec) -> str:
         raise ValueError("No balance statistics found. Run balance tests first.")
     
     balance_df = spec.balance_stats
+    if balance_df.empty:
+        reason = getattr(spec, 'balance_diagnostics', {}).get(
+            'reason', 'No control covariates are available for balance assessment.')
+        summary = f"BALANCE TEST RESULTS\nCovariate balance unavailable. {reason}"
+        print(summary)
+        return summary
     
     # Create formatted summary
     summary_lines = []
@@ -225,10 +231,10 @@ def write_uplift_summary(spec) -> str:
     summary_lines.append("")
     
     # ATE estimates
-    if hasattr(spec, 'ate_estimate'):
+    if getattr(spec, 'ate_estimate', None) is not None:
         summary_lines.append(f"Average Treatment Effect (ATE): {spec.ate_estimate:.4f}")
     
-    if hasattr(spec, 'ate_ci'):
+    if getattr(spec, 'ate_ci', None) is not None:
         summary_lines.append(f"95% Confidence Interval: [{spec.ate_ci[0]:.4f}, {spec.ate_ci[1]:.4f}]")
     
     summary_lines.append("")
@@ -241,18 +247,30 @@ def write_uplift_summary(spec) -> str:
             summary_lines.append(f"{metric}: {value:.4f}")
         summary_lines.append("")
     
-    # CATE statistics 
-    if hasattr(spec, 'cate_estimates'):
-        summary_lines.append("INDIVIDUAL TREATMENT EFFECTS (CATE):")
+    if getattr(spec, 'experimental', False):
+        summary_lines.append("Experimental estimator: validate design and inference assumptions before use.")
+    if getattr(spec, 'inference', None):
+        summary_lines.append(f"Inference: {spec.inference}")
+    if getattr(spec, 'ate_ci', None) is None:
+        summary_lines.append("Confidence interval: unavailable (no validated interval for this estimator).")
+
+    # CATE statistics
+    if getattr(spec, 'cate_estimates', None) is not None:
+        estimates = spec.cate_estimates
+        if isinstance(estimates, dict):
+            estimates = next(iter(estimates.values()))
+        summary_lines.append("CONDITIONAL TREATMENT EFFECT ESTIMATES (CATE):")
         summary_lines.append("-" * 40)
-        summary_lines.append(f"Mean CATE: {spec.cate_estimates.mean():.4f}")
-        summary_lines.append(f"Std Dev CATE: {spec.cate_estimates.std():.4f}")
-        summary_lines.append(f"Min CATE: {spec.cate_estimates.min():.4f}")
-        summary_lines.append(f"Max CATE: {spec.cate_estimates.max():.4f}")
+        summary_lines.append(f"Mean CATE: {estimates.mean():.4f}")
+        summary_lines.append(f"Std Dev CATE: {estimates.std():.4f}")
+        summary_lines.append(f"Min CATE: {estimates.min():.4f}")
+        summary_lines.append(f"Max CATE: {estimates.max():.4f}")
         summary_lines.append("")
     
+    if getattr(spec, 'cate_estimates', None) is None:
+        summary_lines.append("Conditional treatment effects: unavailable; this method estimates an average effect only.")
     summary_lines.append("=" * 60)
-    
+
     # Join all lines
     summary_text = "\n".join(summary_lines)
     

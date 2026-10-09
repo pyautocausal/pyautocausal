@@ -4,6 +4,8 @@ from typing import Any, ClassVar, Set
 import pandas as pd
 from .output_types import OutputType
 from matplotlib.figure import Figure
+from .serialization import jsonify
+import json
 from ..orchestration.result import Result
 class UnsupportedOutputTypeError(Exception):
     """Raised when attempting to save an unsupported output type"""
@@ -90,8 +92,7 @@ class OutputHandler(ABC):
             if not isinstance(data, Figure):
                 raise TypeError("Data must be a matplotlib Figure for PNG output")
         elif output_type == OutputType.JSON:
-            if not isinstance(data, dict) and not isinstance(data, pd.DataFrame):
-                raise TypeError("Data must be dict or DataFrame for JSON output")
+            json.dumps(jsonify(data), allow_nan=False)
     
     @abstractmethod
     def save_json(self, name: str, data: Any):

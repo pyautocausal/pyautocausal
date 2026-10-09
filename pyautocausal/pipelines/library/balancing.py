@@ -179,22 +179,28 @@ def compute_balance_tests(spec: Union[DiDSpec, 'StaggeredDiDSpec', 'EventStudySp
     Returns:
         Same specification object with balance test results added
     """
-    # Extract balance testing data based on specification type
-    balance_data = _extract_balance_data(spec)
-    
-    # Get control variables
-    control_cols = getattr(spec, 'control_cols', [])
-    if not control_cols:
-        # Auto-detect control columns
+    # An explicit empty list means that the specification has no controls.
+    # Do not silently substitute numeric identifiers or other unused columns.
+    control_cols = getattr(spec, 'control_cols', None)
+    if control_cols is None:
         exclude_cols = [spec.outcome_col, spec.treatment_cols[0]]
-        if hasattr(spec, 'unit_col'):
-            exclude_cols.append(spec.unit_col)
-        if hasattr(spec, 'time_col'):
-            exclude_cols.append(spec.time_col)
-        
-        numeric_cols = balance_data.select_dtypes(include=[np.number]).columns
-        control_cols = [col for col in numeric_cols if col not in exclude_cols]
-    
+        exclude_cols += [getattr(spec, name) for name in ('unit_col', 'time_col') if hasattr(spec, name)]
+        control_cols = [column for column in spec.data.select_dtypes(include=[np.number])
+                        if column not in exclude_cols]
+    columns = ['covariate', 'treated_mean', 'treated_std', 'treated_n',
+               'control_mean', 'control_std', 'control_n', 'diff', 'se_diff',
+               't_stat', 'p_value']
+    if not control_cols:
+        spec.balance_stats = pd.DataFrame(columns=columns)
+        spec.balance_data = spec.data.iloc[:0].copy()
+        spec.balance_diagnostics = {
+            'status': 'unavailable',
+            'reason': 'No control covariates were specified; covariate balance cannot be assessed.',
+            'control_cols': [],
+        }
+        return spec
+    balance_data = _extract_balance_data(spec)
+
     # Compute balance statistics
     balance_stats = []
     treatment_col = spec.treatment_cols[0]
@@ -235,7 +241,11 @@ def compute_balance_tests(spec: Union[DiDSpec, 'StaggeredDiDSpec', 'EventStudySp
         })
     
     # Add balance results to spec
-    spec.balance_stats = pd.DataFrame(balance_stats)
+    spec.balance_stats = pd.DataFrame(balance_stats, columns=columns)
+    spec.balance_diagnostics = {
+        'status': 'computed', 'control_cols': list(control_cols),
+        'rows': len(balance_data),
+    }
     spec.balance_data = balance_data
     
     return spec

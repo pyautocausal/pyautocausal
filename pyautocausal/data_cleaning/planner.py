@@ -26,7 +26,7 @@ class DataCleaningPlanner:
             operations: List of available cleaning operations. If None, uses all built-in operations.
         """
         self.validation_results = validation_results
-        self.operations = operations or get_all_operations()
+        self.operations = get_all_operations() if operations is None else operations
     
     def create_plan(self) -> CleaningPlan:
         """Create a cleaning plan from validation results.

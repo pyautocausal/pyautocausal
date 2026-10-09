@@ -18,6 +18,28 @@ from pyautocausal.pipelines.example_graph import create_cross_sectional_graph, c
 from pyautocausal.pipelines.mock_data import generate_mock_data
 
 
+def assert_execution_report(graph, output_path):
+    report = json.loads((output_path / 'execution_report.json').read_text())
+    assert set(report['nodes']) == {node.name for node in graph.nodes}
+    assert report['package_versions']['numpy']
+    for node in graph.nodes:
+        entry = report['nodes'][node.name]
+        assert entry['state'] == node.state.value
+        assert entry['state'] in {'completed', 'passed'}
+        assert entry['execution_count'] == node.execution_count
+        if node.is_passed():
+            assert entry['reason']
+        value = node.get_result_value()
+        if hasattr(value, 'formula') and hasattr(value, 'data'):
+            assert entry['analysis']['formula'] == value.formula
+            assert entry['analysis']['control_cols'] == value.control_cols
+            assert entry['analysis']['rows'] == len(value.data)
+            model = getattr(value, 'model', None)
+            if isinstance(getattr(model, 'params', None), pd.Series):
+                assert entry['analysis']['coefficients'] == model.params.to_dict()
+
+
+
 class TestExampleGraphExecution:
     """Test suite for actual execution of the refactored example graph."""
 
@@ -66,7 +88,8 @@ class TestExampleGraphExecution:
             assert expected_nodes.issubset(completed_nodes)
 
             # check that the results were saved in the new directory structure
-            assert set(os.listdir(output_path)) == {'plots', 'text'}
+            assert set(os.listdir(output_path)) == {'plots', 'text', 'execution_report.json'}
+            assert_execution_report(graph, output_path)
             assert (output_path / "text" / "save_event_output.txt").exists()
             assert (output_path / "plots" / "event_study_plot.png").exists()
             
@@ -150,7 +173,8 @@ class TestExampleGraphExecution:
         assert len(failed_nodes) == 0, f"The following nodes failed: {failed_nodes}"
         
         # Check for the new directory structure
-        assert set(os.listdir(output_path)) == {'plots', 'text'}
+        assert set(os.listdir(output_path)) == {'plots', 'text', 'execution_report.json'}
+        assert_execution_report(graph, output_path)
         assert (output_path / "plots" / "synthdid_plot.png").exists()
 
 
@@ -187,7 +211,8 @@ class TestExampleGraphExecution:
         graph.fit(df=data)
         
         # Check that standard DiD files are generated in the new directory structure
-        assert set(os.listdir(output_path)) == {'plots', 'text'}
+        assert set(os.listdir(output_path)) == {'plots', 'text', 'execution_report.json'}
+        assert_execution_report(graph, output_path)
         assert (output_path / "text" / "save_ols_did.txt").exists()
         
         # Verify nodes completed

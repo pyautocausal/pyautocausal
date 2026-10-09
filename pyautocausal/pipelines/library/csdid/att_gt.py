@@ -36,7 +36,9 @@ class ATTgt:
     dp['panel'] = panel
     self.dp = dp
 
-  def fit(self, est_method = 'dr', base_period = 'varying', bstrap = True):
+  def fit(self, est_method = 'dr', base_period = 'varying', bstrap = True, random_state = None):
+    # A caller may pass a seed or share one local Generator across aggregations.
+    self._rng = np.random.default_rng(random_state)
     # print(self.dp)
     dp = self.dp
     result, inffunc = compute_att_gt(dp, est_method = est_method, base_period = base_period)
@@ -48,7 +50,7 @@ class ATTgt:
             np.zeros(len(att)),
         )
     if bstrap:
-      ref_se = mboot(inffunc.T, dp)
+      ref_se = mboot(inffunc.T, dp, rng=self._rng)
       crit_val, se = ref_se['crit_val'], ref_se['se']
       V = ref_se['V']
     
@@ -119,7 +121,9 @@ class ATTgt:
     cband         = None,
     alp           = None,
     clustervars   = None,
+    random_state  = None,
     ):
+    rng = self._rng if random_state is None else np.random.default_rng(random_state)
     mp = self.MP
     did_object = self.did_object
     
@@ -132,7 +136,7 @@ class ATTgt:
     atte = agg_te(
       mp, typec=typec, balance_e=balance_e, 
       min_e=min_e, max_e=max_e, na_rm=na_rm, bstrap=bstrap, 
-      biters=biters, cband=cband, alp=alp, clustervars=clustervars
+      biters=biters, cband=cband, alp=alp, clustervars=clustervars, rng=rng
     )
 
     self.atte = atte

@@ -1,13 +1,13 @@
 [tool.poetry]
 name = "pyautocausal"
-version = "0.1.0"
+version = "0.1.2"
 description = "Automated causal inference pipelines for data scientists"
 authors = ["Nicholas Topousis <nicktopousis@gmail.com>", "Yogam Tchokni <yogamtchokni@gmail.com >"]
 license = "MIT"
 readme = "README.md"
-homepage = "https://github.com/NickyTops23/pyautocausal"
-repository = "https://github.com/NickyTops23/pyautocausal"
-documentation = "https://github.com/NickyTops23/pyautocausal/blob/main/README.md"
+homepage = "https://github.com/pyautocausal/pyautocausal"
+repository = "https://github.com/pyautocausal/pyautocausal"
+documentation = "https://github.com/pyautocausal/pyautocausal/blob/main/README.md"
 keywords = ["causal-inference", "econometrics", "statistics", "difference-in-differences", "synthetic-control"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -32,7 +32,8 @@ matplotlib = ">=2.2.3"
 pyarrow = "^18.1.0"
 statsmodels = "^0.14.1"
 nbformat = "^5.10.4"
-scikit-learn = "^1.6.1"
+# DoubleML 0.10 uses force_all_finite, removed in scikit-learn 1.8.
+scikit-learn = ">=1.6.1,<1.8"
 pyyaml = "^6.0"
 linearmodels = "^6.1"
 cloudpickle = "^3.1.1"
@@ -40,6 +41,15 @@ cvxpy = ">=1.1.7"
 numpy = ">=1.17"
 scipy = ">=1.4.1"
 jinja2 = ">=2.10"
+nbconvert = {version = "^7.16.6", optional = true}
+nbclient = {version = "^0.10.2", optional = true}
+ipykernel = {version = "^6.30.0", optional = true}
+doubleml = {version = ">=0.10.1,<0.11", optional = true}
+
+[tool.poetry.extras]
+notebooks = ["nbconvert", "nbclient", "ipykernel"]
+doubleml = ["doubleml"]
+all = ["nbconvert", "nbclient", "ipykernel", "doubleml"]
 
 [tool.poetry.group.io]
 optional = true
@@ -52,9 +62,12 @@ fsspec = {extras = ["http"], version = "^2025.7.0"}
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.2"
-jupyter = "^1.1.1"
 nbconvert = "^7.16.6"
 nbclient = "^0.10.2"
+ipykernel = "^6.30.0"
+
+[tool.pytest.ini_options]
+markers = ["scientific: longer prespecified statistical benchmarks for release validation"]
 
 [build-system]
 requires = ["poetry-core"]

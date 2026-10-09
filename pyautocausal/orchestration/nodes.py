@@ -82,7 +82,8 @@ class Node(BaseNode):
         self.predecessor_outputs = {}
         self.action_function = action_function
         self.execution_count = 0
-        self.node_description = node_description
+        self.error = None
+        self.node_description = node_description if node_description is not None else inspect.getdoc(getattr(action_function, "func", action_function))
         self.display_function = display_function
 
     def validate_action_function_static(self, name, action_function):
@@ -314,6 +315,10 @@ class Node(BaseNode):
             self.mark_completed()
         except Exception as e:
             self.mark_failed()
+            self.error = {"type": type(e).__name__, "message": str(e)}
+            for key in ('cleaning_metadata', 'cleaning_history'):
+                if hasattr(e, key):
+                    self.error[key] = getattr(e, key)
             
             # Try to preserve original exception type with enhanced message
             enhanced_exception = self._try_recreate_exception_with_node_context(e)
@@ -348,10 +353,6 @@ class Node(BaseNode):
     
     def is_running(self):
         return self.state == NodeState.RUNNING
-
-    def is_passed(self):
-        """Returns True if the node has been marked as passed (skipped due to decision branching)."""
-        return self.state == NodeState.PASSED
 
     def is_passed(self):
         """Returns True if the node has been marked as passed (skipped due to decision branching)."""
@@ -416,7 +417,7 @@ class DecisionNode(Node):
             action_function=passthrough_function,
             output_config=None,
             save_node=False,
-            node_description=node_description
+            node_description=node_description if node_description is not None else inspect.getdoc(getattr(condition, "func", condition))
         )
         self.condition = condition
         # warn if the condition does not return a boolean
@@ -432,6 +433,7 @@ class DecisionNode(Node):
             warnings.warn(f"Condition for decision node {self.name} returns a non-boolean value: {self.condition_signature.return_annotation}")
 
 
+        self.decision_result = None
         self._ewt_nodes = set()  # Nodes to execute when condition is True
         self._ewf_nodes = set()  # Nodes to execute when condition is False
     
@@ -506,6 +508,7 @@ class DecisionNode(Node):
         
         # Evaluate the condition
         condition_result = self.condition_satisfied()
+        self.decision_result = condition_result
 
         # Log the decision outcome
         self.logger.info(
@@ -533,80 +536,19 @@ class DecisionNode(Node):
         self.mark_unreachable_nodes_as_passed()
         
     def mark_unreachable_nodes_as_passed(self):
-        """Mark nodes that are unreachable due to decision branching as PASSED."""
-        condition_result = self.condition_satisfied()
-        
-        if condition_result:
-            # Mark "execute when false" nodes as passed if they won't be executed
-            for successor in self._ewf_nodes:
-                edge = self.graph.edges[self, successor]
-                if not edge.get('traversable', True):
-                    successor.mark_passed()
-                    # Recursively mark downstream nodes as passed
-                    self._mark_downstream_as_passed(successor)
-        else:
-            # Mark "execute when true" nodes as passed if they won't be executed
-            for successor in self._ewt_nodes:
-                edge = self.graph.edges[self, successor]
-                if not edge.get('traversable', True):
-                    successor.mark_passed()
-                    # Recursively mark downstream nodes as passed
-                    self._mark_downstream_as_passed(successor)
-
-    def _mark_downstream_as_passed(self, node):
-        """Recursively mark downstream nodes as passed if all their upstream paths are passed or non-traversable."""
-        for successor in self.graph.successors(node):
-            # Check if all predecessors of this successor are either PASSED or have non-traversable edges
-            all_predecessors_passed_or_nontraversable = True
-            for pred in self.graph.predecessors(successor):
-                edge = self.graph.edges[pred, successor]
-                if pred.state != NodeState.PASSED and edge.get('traversable', True):
-                    all_predecessors_passed_or_nontraversable = False
-                    break
-            
-            if all_predecessors_passed_or_nontraversable:
+        """Propagate this decision's recorded outcome without re-evaluating it."""
+        for successor in self.graph.successors(self):
+            if not self.graph.edges[self, successor].get('traversable', True):
                 successor.mark_passed()
-                # Continue recursion
                 self._mark_downstream_as_passed(successor)
-        
-        # Mark unreachable nodes as passed
-        self.mark_unreachable_nodes_as_passed()
-        
-    def mark_unreachable_nodes_as_passed(self):
-        """Mark nodes that are unreachable due to decision branching as PASSED."""
-        condition_result = self.condition_satisfied()
-        
-        if condition_result:
-            # Mark "execute when false" nodes as passed if they won't be executed
-            for successor in self._ewf_nodes:
-                edge = self.graph.edges[self, successor]
-                if not edge.get('traversable', True):
-                    successor.mark_passed()
-                    # Recursively mark downstream nodes as passed
-                    self._mark_downstream_as_passed(successor)
-        else:
-            # Mark "execute when true" nodes as passed if they won't be executed
-            for successor in self._ewt_nodes:
-                edge = self.graph.edges[self, successor]
-                if not edge.get('traversable', True):
-                    successor.mark_passed()
-                    # Recursively mark downstream nodes as passed
-                    self._mark_downstream_as_passed(successor)
 
     def _mark_downstream_as_passed(self, node):
-        """Recursively mark downstream nodes as passed if all their upstream paths are passed or non-traversable."""
         for successor in self.graph.successors(node):
-            # Check if all predecessors of this successor are either PASSED or have non-traversable edges
-            all_predecessors_passed_or_nontraversable = True
-            for pred in self.graph.predecessors(successor):
-                edge = self.graph.edges[pred, successor]
-                if pred.state != NodeState.PASSED and edge.get('traversable', True):
-                    all_predecessors_passed_or_nontraversable = False
-                    break
-            
-            if all_predecessors_passed_or_nontraversable:
+            if successor.state != NodeState.PENDING:
+                continue
+            if all(pred.is_passed() or not self.graph.edges[pred, successor].get('traversable', True)
+                   for pred in self.graph.predecessors(successor)):
                 successor.mark_passed()
-                # Continue recursion
                 self._mark_downstream_as_passed(successor)
 
 class InputNode(Node):

@@ -51,7 +51,7 @@ def get_agg_inf_func(att, inffunc, whichones, weights_agg, wif=None):
     return thisinffunc
 
 
-def get_se(thisinffunc, DIDparams=None):
+def get_se(thisinffunc, DIDparams=None, rng=None):
     alpha = 0.05
     bstrap = False
     if DIDparams is not None:
@@ -61,7 +61,7 @@ def get_se(thisinffunc, DIDparams=None):
         n = len(thisinffunc)
 
     if bstrap:
-        bout = mboot(thisinffunc, DIDparams)
+        bout = mboot(thisinffunc, DIDparams, rng=rng)
         return bout['se']
     else:
         return np.sqrt(np.mean((thisinffunc)**2) / n)

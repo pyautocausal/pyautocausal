@@ -29,8 +29,8 @@ def setup_output_directories(output_path: Path) -> Tuple[Path, Path]:
     plots_dir = output_path / "plots"
     text_dir = output_path / "text"
     
-    plots_dir.mkdir(exist_ok=True)
-    text_dir.mkdir(exist_ok=True)
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    text_dir.mkdir(parents=True, exist_ok=True)
     
     return plots_dir.absolute(), text_dir.absolute()
 
@@ -53,9 +53,12 @@ def print_execution_summary(graph: ExecutableGraph) -> None:
     )
     total_nodes = len(list(graph.nodes()))
     
+    failed_nodes = sum(node.state.name == "FAILED" for node in graph.nodes())
+    incomplete_nodes = len(graph.get_incomplete_nodes())
     print(f"Total nodes in graph: {total_nodes}")
     print(f"Executed nodes: {executed_nodes}")
     print(f"Skipped nodes (due to branching): {skipped_nodes}")
+    print(f"Failed nodes: {failed_nodes}; incomplete nodes: {incomplete_nodes}")
 
 
 def export_outputs(
@@ -89,6 +92,10 @@ def export_outputs(
     if data_path is not None and df is not None:
         raise ValueError("Only one of data_path or df should be provided, not both")
 
+    if output_path is None:
+        raise ValueError("output_path is required")
+    output_path = Path(output_path)
+
     # Create output directories if they don't exist
     plots_dir, text_dir = setup_output_directories(output_path)
 
@@ -97,6 +104,9 @@ def export_outputs(
         data_path = output_path / data_filename
         df.to_csv(data_path, index=False)
         print(f"Data saved to {data_path}")
+
+    from pyautocausal.persistence.local_output_handler import LocalOutputHandler
+    LocalOutputHandler(output_path).save_json("execution_report", graph.execution_report())
 
     # Graph visualization
     md_visualization_path = text_dir / "pipeline_visualization.md"
@@ -110,7 +120,8 @@ def export_outputs(
     exporter = NotebookExporter(graph)
     
     # Export notebook - use just the filename since notebook and data are in same directory
-    data_file_name = Path(data_path).name
+    import os
+    data_file_name = os.path.relpath(Path(data_path).resolve(), output_path.resolve())
     
     exporter.export_notebook(
         str(notebook_path),

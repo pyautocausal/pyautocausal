@@ -261,7 +261,8 @@ def pre_process_did(yname, tname, idname, gname, data: pd.DataFrame,
   n, t = data.shape
   control_group = control_group[0]
   columns = [idname, tname, yname, gname]
-  control_group = "nevertreated"
+  if control_group not in {"nevertreated", "notyettreated"}:
+    raise ValueError("Unknown control_group")
   # print(columns)
   # Columns
   if clustervar is not None:
@@ -276,23 +277,14 @@ def pre_process_did(yname, tname, idname, gname, data: pd.DataFrame,
   if xformla is None:
     xformla = f'{yname} ~ 1'
 
-  # if xformla is None:
+  # A malformed covariate formula must not silently become an unadjusted fit.
   try:
-    _, x_cov = fml(xformla, data = data, return_type='dataframe')
-    _, n_cov = x_cov.shape
-    data = pd.concat([data[columns], x_cov], axis=1)
-    data = data.assign(w = w)
-  except:
-    data = data.assign(intercept = 1)
-    clms = columns + ['intercept']
-    n_cov = len(data.columns)
-    # patsy dont work with pyspark
-    data = data[clms]
-    if weights_name is None:
-      data = data.assign(w = 1)
-    else:
-      data = data.assign(w = lambda x: x[weights_name] * 1)
-
+    _, x_cov = fml(xformla, data=data, return_type='dataframe', NA_action='raise')
+  except Exception as exc:
+    raise ValueError(f"Invalid C&S covariate formula or missing model data: {xformla}") from exc
+  _, n_cov = x_cov.shape
+  data = pd.concat([data[columns], x_cov], axis=1)
+  data = data.assign(w=w)
 
   data = data.dropna()
   ndiff = n - len(data) 

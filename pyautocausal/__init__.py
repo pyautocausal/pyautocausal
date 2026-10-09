@@ -30,9 +30,9 @@ Main Components:
     - AutoCleaner: Automated data cleaning and validation
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.2"
 __author__ = "Nicholas Topousis, Yogam Tchokni"
-__email__ = "nicholas.topousis@example.com"
+__email__ = "nicktopousis@gmail.com"
 
 # Core pipeline functionality - main user entry points
 from .pipelines.example_graph import (
