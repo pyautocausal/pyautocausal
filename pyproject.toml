@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "pyautocausal"
-version = "0.1.1"
+version = "0.1.2"
 description = "Automated causal inference pipelines for data scientists"
 authors = ["Nicholas Topousis <nicktopousis@gmail.com>", "Yogam Tchokni <yogamtchokni@gmail.com >"]
 license = "MIT"

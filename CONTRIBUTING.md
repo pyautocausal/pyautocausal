@@ -31,8 +31,8 @@ Document the estimand, identification assumptions, uncertainty method, sample re
 
 1. Fast tests, supported-version matrix, installed wheels and scientific benchmarks pass.
 2. Run the documented examples into a fresh output directory; inspect reports and diagnostics.
-3. Update version metadata and the changelog. Explain which earlier results need to be rerun.
+3. Check the [published PyPI versions](https://pypi.org/project/pyautocausal/#history) and choose an unused version; GitHub tags and repository metadata may lag package-index releases. Update version metadata and the changelog. Explain which earlier results need to be rerun.
 4. Review the complete diff and issue acceptance criteria; merge only after required checks and review pass.
-5. Tag and publish the reviewed version. Keep repository and package-index publication separate; a successful local build is not a published release.
+5. Build the release artifacts from the reviewed commit, verify installation from the source archive, and record SHA-256 checksums. Tag and publish the reviewed version. Keep repository and package-index publication separate; a successful local build is not a published release.
 
 Do not overwrite local analysis outputs or include user datasets in a release.

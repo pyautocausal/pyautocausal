@@ -30,7 +30,7 @@ Main Components:
     - AutoCleaner: Automated data cleaning and validation
 """
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 __author__ = "Nicholas Topousis, Yogam Tchokni"
 __email__ = "nicktopousis@gmail.com"
 

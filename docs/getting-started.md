@@ -1,6 +1,6 @@
 # Getting started
 
-Install Python 3.10–3.12 and `pip install 'pyautocausal[notebooks]'` if you need executable notebooks or HTML; use the base package for estimation and notebook generation.
+Install Python 3.10–3.12 and `pip install 'pyautocausal[notebooks]>=0.1.2'` if you need executable notebooks or HTML; use the base package for estimation and notebook generation. Until version 0.1.2 is published, follow the [development installation](../README.md#installation).
 
 ## Verify a simple result
 

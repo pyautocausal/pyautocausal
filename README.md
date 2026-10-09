@@ -2,18 +2,20 @@
 
 Python pipelines for fitting and reporting causal-inference models. PyAutoCausal provides data checks, graph execution, panel estimators and notebook exports. Choosing a statistical model does not establish its identifying assumptions: users must justify treatment assignment, covariate choice, parallel trends and the relevant comparison group.
 
-Python **3.10–3.12** is supported. The package remains alpha software. See [corrections in 0.1.1](CHANGELOG.md) before reusing results produced by earlier versions.
+Python **3.10–3.12** is supported. The package remains alpha software. See [corrections in 0.1.2](CHANGELOG.md) before reusing results produced by earlier versions.
 
 ## Installation
 
+These instructions target version 0.1.2 or newer. Until the correctness release is published on PyPI, use the development installation below.
+
 ```bash
-pip install pyautocausal
+pip install 'pyautocausal>=0.1.2'
 # Execute exported notebooks and produce HTML:
-pip install 'pyautocausal[notebooks]'
+pip install 'pyautocausal[notebooks]>=0.1.2'
 # Optional partially linear DoubleML model:
-pip install 'pyautocausal[doubleml]'
+pip install 'pyautocausal[doubleml]>=0.1.2'
 # Both optional features:
-pip install 'pyautocausal[all]'
+pip install 'pyautocausal[all]>=0.1.2'
 ```
 
 For the development version:

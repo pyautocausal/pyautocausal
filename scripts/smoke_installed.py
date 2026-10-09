@@ -16,7 +16,7 @@ def main():
     parser.add_argument('--mode', choices=['base', 'all'], required=True)
     args = parser.parse_args()
     assert 'site-packages' in str(Path(pyautocausal.__file__).resolve()), pyautocausal.__file__
-    assert pyautocausal.__version__ == '0.1.1'
+    assert pyautocausal.__version__ == '0.1.2'
     for name in datasets.__all__:
         assert not getattr(datasets, name).empty
     assert datasets.minimum_wage.shape == (2500, 5)
