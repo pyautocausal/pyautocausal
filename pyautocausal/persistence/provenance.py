@@ -69,7 +69,8 @@ def graph_execution_report(graph):
                 if getattr(model, field, None) is not None:
                     analysis[field] = _safe(getattr(model, field))
             if isinstance(model, dict):
-                for key in ('control_group', 'estimator', 'column_mapping'):
+                for key in ('control_group', 'estimator', 'column_mapping',
+                            'random_state', 'bootstrap_iterations'):
                     if key in model:
                         analysis[key] = _safe(model[key])
                 overall = getattr(model.get('overall_effect'), 'atte', None)

@@ -35,13 +35,11 @@ def test_both_cs_wrappers_match_direct_backend_and_honor_controls(wrapper, contr
     raw.treatment_time = raw.treatment_time.fillna(0)
     formula = 'y ~ x' if controls else 'y ~ 1'
     # Direct backend is independent of wrapper preparation and construction.
-    np.random.seed(31)
     direct = ATTgt(yname='y', tname='t', idname='id_unit', gname='treatment_time',
                    data=raw, xformla=formula, control_group=[control_group],
                    panel=True, allow_unbalanced_panel=True, anticipation=0,
                    cband=True, biters=1000, alp=.05).fit(
-                       est_method='dr', base_period='varying', bstrap=True)
-    np.random.seed(31)
+                       est_method='dr', base_period='varying', bstrap=True, random_state=42)
     result = wrapper(spec).model['att_gt_object']
     assert result.dp['xformla'] == formula
     assert result.dp['control_group'] == control_group
@@ -91,7 +89,6 @@ def test_cs_rejects_unsupported_covariates_before_backend_can_silently_drop_them
 ])
 def cs_reserved_name_reference(request):
     wrapper = request.param
-    np.random.seed(31)
     reference = wrapper(create_staggered_did_specification(
         staggered_panel(), control_cols=['x'])).model['att_gt_object']
     return wrapper, reference
@@ -108,7 +105,6 @@ def test_cs_reserved_covariate_names_preserve_adjustment(cs_reserved_name_refere
     data['__pyautocausal_cs_0'] = -123.
     spec = create_staggered_did_specification(data, control_cols=[name])
     original = spec.data.copy(deep=True)
-    np.random.seed(31)
     fitted = wrapper(spec)
     result = fitted.model['att_gt_object']
     alias = fitted.model['column_mapping'][name]
@@ -120,3 +116,68 @@ def test_cs_reserved_covariate_names_preserve_adjustment(cs_reserved_name_refere
     pd.testing.assert_frame_equal(spec.data, original)
     assert fitted.control_cols == [name]
     assert spec.model is None
+
+
+def assert_global_random_state_unchanged(before):
+    after = np.random.get_state()
+    assert after[0] == before[0]
+    np.testing.assert_array_equal(after[1], before[1])
+    assert after[2:] == before[2:]
+
+
+@pytest.mark.parametrize('wrapper', [
+    fit.fit_callaway_santanna_estimator,
+    fit.fit_callaway_santanna_nyt_estimator,
+])
+def test_cs_bootstrap_is_seeded_for_fit_and_every_aggregation(wrapper):
+    spec = create_staggered_did_specification(staggered_panel(), control_cols=['x'])
+    before = np.random.get_state()
+    default = wrapper(spec).model
+    repeated = wrapper(spec, random_state=42).model
+    other_seed = wrapper(spec, random_state=91).model
+    assert_global_random_state_unchanged(before)
+    assert default['random_state'] == repeated['random_state'] == 42
+    assert other_seed['random_state'] == 91
+    assert default['bootstrap_iterations'] == 1000
+
+    for key in ('att', 'se', 'c', 'l_se', 'u_se'):
+        np.testing.assert_array_equal(
+            default['att_gt_object'].results[key], repeated['att_gt_object'].results[key])
+    np.testing.assert_array_equal(
+        default['att_gt_object'].results['att'], other_seed['att_gt_object'].results['att'])
+    assert not np.array_equal(
+        default['att_gt_object'].results['se'], other_seed['att_gt_object'].results['se'])
+
+    for aggregation in ('overall_effect', 'dynamic_effects', 'group_effects'):
+        first, again, different = (model[aggregation].atte
+                                   for model in (default, repeated, other_seed))
+        for key in ('overall_att', 'overall_se', 'att_egt', 'se_egt', 'crit_val_egt'):
+            if first[key] is None:
+                assert again[key] is None
+            else:
+                np.testing.assert_array_equal(first[key], again[key])
+        np.testing.assert_array_equal(first['overall_att'], different['overall_att'])
+        assert not np.array_equal(first['overall_se'], different['overall_se'])
+    assert spec.model is None
+
+
+@pytest.mark.parametrize('parallel', [False, True])
+def test_multiplier_bootstrap_local_stream_is_reproducible(parallel):
+    from pyautocausal.pipelines.library.csdid.utils.mboot import run_multiplier_bootstrap
+
+    influences = np.random.default_rng(83).normal(size=(2501, 2))
+    before = np.random.get_state()
+    first = run_multiplier_bootstrap(influences, 12, pl=parallel, cores=2, rng=17)
+    repeated = run_multiplier_bootstrap(influences, 12, pl=parallel, cores=2, rng=17)
+    assert_global_random_state_unchanged(before)
+    np.testing.assert_array_equal(first, repeated)
+    assert first.shape == (12, 2)
+    if not parallel:
+        # The change only localizes randomness: draws still use the same
+        # Rademacher multiplier mean for each influence-function column.
+        rng = np.random.default_rng(17)
+        expected = np.array([
+            np.mean(influences * rng.choice([1, -1], size=(len(influences), 1)), axis=0)
+            for _ in range(12)
+        ])
+        np.testing.assert_array_equal(first, expected)

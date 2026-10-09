@@ -1,15 +1,15 @@
 # Changelog
 
-## 0.1.1 — Unreleased correctness release
+## 0.1.2 — Unreleased correctness release
 
-Re-run affected analyses produced with 0.1.0. Existing test success did not rule out the numerical and export errors corrected here. Saved reports are not automatically rewritten.
+Re-run affected analyses produced with 0.1.0 or 0.1.1. Both versions were already published before these corrections; key estimator files in the published 0.1.1 source distribution match the reviewed baseline. Existing test success did not rule out the numerical and export errors corrected here. Saved reports are not automatically rewritten.
 
 ### Results that can change
 
 - Cross-sectional treatment coding preserves 0/1 meaning instead of reversing it based on the first row. Other encodings require an explicit treated value.
 - Synthetic DiD consistently uses the count of pretreatment periods. Panel validation, weighting, uncertainty calculations and plotted effect paths have been reviewed against the reference implementation. Artificial random plot variation is removed.
 - Synthetic-control predictors are scaled across units, and the fitting loss compares matching predictor dimensions. Outcome-only specifications now work; balance diagnostics explicitly report when no adjustment covariates are available.
-- Callaway–Sant’Anna receives requested covariates and retains the requested comparison-group mode. Explicit empty control lists are respected.
+- Callaway–Sant’Anna receives requested covariates and retains the requested comparison-group mode. Explicit empty control lists are respected. Multiplier-bootstrap inference uses a recorded local seed, so repeated runs and notebook exports reproduce the same uncertainty estimates without changing global random state.
 - Never-treated units no longer receive a spurious event-period-zero treatment dummy.
 - Uplift models no longer balance away arm-specific probability differences or manufacture heterogeneity. Unsupported meta-learner intervals are explicitly unavailable. Average-effect inference is distinguished from CATE predictions.
 - Time cleaning preserves intraday precision and records the original mapping. Cleaning failures propagate; changed samples are audited and revalidated.

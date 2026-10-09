@@ -474,7 +474,9 @@ def _prepare_cs_data(spec):
 
 
 @make_transformable
-def fit_callaway_santanna_estimator(spec: StaggeredDiDSpec) -> StaggeredDiDSpec:
+def fit_callaway_santanna_estimator(
+    spec: StaggeredDiDSpec, random_state: Optional[int] = 42
+) -> StaggeredDiDSpec:
     """
     Wrapper function to fit the Callaway and Sant'Anna (2021) DiD estimator using never-treated units as the control group.
     
@@ -482,11 +484,13 @@ def fit_callaway_santanna_estimator(spec: StaggeredDiDSpec) -> StaggeredDiDSpec:
     
     Args:
         spec: A StaggeredDiDSpec object with data and column information
+        random_state: Seed for the local multiplier bootstrap; None draws fresh randomness.
         
     Returns:
         StaggeredDiDSpec with fitted model
     """
     # A shared specification can feed several independent graph branches.
+    rng = np.random.default_rng(random_state)
     spec = copy.copy(spec)
     backend_spec, column_mapping = _cs_backend_spec(spec)
     
@@ -529,7 +533,7 @@ def fit_callaway_santanna_estimator(spec: StaggeredDiDSpec) -> StaggeredDiDSpec:
     )
     
     # Fit the model
-    att_gt.fit(est_method='dr', base_period='varying', bstrap=True)
+    att_gt.fit(est_method='dr', base_period='varying', bstrap=True, random_state=rng)
     
     # Generate summary table
     att_gt.summ_attgt(n=4)
@@ -539,15 +543,15 @@ def fit_callaway_santanna_estimator(spec: StaggeredDiDSpec) -> StaggeredDiDSpec:
     # Compute aggregated treatment effects
     # Overall effect
     att_gt_overall = copy.deepcopy(att_gt)
-    att_gt_overall.aggte(typec="simple", bstrap=True, cband=True)
+    att_gt_overall.aggte(typec="simple", bstrap=True, cband=True, random_state=rng)
     
     # Dynamic (event study) effects  
     att_gt_dynamic = copy.deepcopy(att_gt)
-    att_gt_dynamic.aggte(typec="dynamic", bstrap=True, cband=True)
+    att_gt_dynamic.aggte(typec="dynamic", bstrap=True, cband=True, random_state=rng)
     
     # Group-specific effects
     att_gt_group = copy.deepcopy(att_gt)
-    att_gt_group.aggte(typec="group", bstrap=True, cband=True)
+    att_gt_group.aggte(typec="group", bstrap=True, cband=True, random_state=rng)
     
     # Store all results in the spec
     spec.model = {
@@ -557,7 +561,9 @@ def fit_callaway_santanna_estimator(spec: StaggeredDiDSpec) -> StaggeredDiDSpec:
         'group_effects': att_gt_group,
         'column_mapping': column_mapping,
         'control_group': 'never_treated',
-        'estimator': 'callaway_santanna_csdid'
+        'estimator': 'callaway_santanna_csdid',
+        'random_state': random_state,
+        'bootstrap_iterations': 1000
     }
     
     return spec
@@ -565,19 +571,23 @@ def fit_callaway_santanna_estimator(spec: StaggeredDiDSpec) -> StaggeredDiDSpec:
 
 
 @make_transformable
-def fit_callaway_santanna_nyt_estimator(spec: StaggeredDiDSpec) -> StaggeredDiDSpec:
+def fit_callaway_santanna_nyt_estimator(
+    spec: StaggeredDiDSpec, random_state: Optional[int] = 42
+) -> StaggeredDiDSpec:
     """
-    Wrapper function to fit the Callaway and Sant'Anna (2021) DiD estimator using never-treated units as the control group.
+    Fit the Callaway and Sant'Anna (2021) DiD estimator using not-yet-treated controls.
     
     This function uses the new csdid module implementation for more robust and comprehensive results.
     
     Args:
         spec: A StaggeredDiDSpec object with data and column information
+        random_state: Seed for the local multiplier bootstrap; None draws fresh randomness.
         
     Returns:
         StaggeredDiDSpec with fitted model
     """
     # A shared specification can feed several independent graph branches.
+    rng = np.random.default_rng(random_state)
     spec = copy.copy(spec)
     backend_spec, column_mapping = _cs_backend_spec(spec)
     
@@ -616,7 +626,7 @@ def fit_callaway_santanna_nyt_estimator(spec: StaggeredDiDSpec) -> StaggeredDiDS
     )
     
     # Fit the model
-    att_gt.fit(est_method='dr', base_period='varying', bstrap=True)
+    att_gt.fit(est_method='dr', base_period='varying', bstrap=True, random_state=rng)
     
     # Generate summary table
     att_gt.summ_attgt(n=4)
@@ -626,15 +636,15 @@ def fit_callaway_santanna_nyt_estimator(spec: StaggeredDiDSpec) -> StaggeredDiDS
     # Compute aggregated treatment effects
     # Overall effect
     att_gt_overall = copy.deepcopy(att_gt)
-    att_gt_overall.aggte(typec="simple", bstrap=True, cband=True)
+    att_gt_overall.aggte(typec="simple", bstrap=True, cband=True, random_state=rng)
     
     # Dynamic (event study) effects  
     att_gt_dynamic = copy.deepcopy(att_gt)
-    att_gt_dynamic.aggte(typec="dynamic", bstrap=True, cband=True)
+    att_gt_dynamic.aggte(typec="dynamic", bstrap=True, cband=True, random_state=rng)
     
     # Group-specific effects
     att_gt_group = copy.deepcopy(att_gt)
-    att_gt_group.aggte(typec="group", bstrap=True, cband=True)
+    att_gt_group.aggte(typec="group", bstrap=True, cband=True, random_state=rng)
     
     # Store all results in the spec
     spec.model = {
@@ -644,7 +654,9 @@ def fit_callaway_santanna_nyt_estimator(spec: StaggeredDiDSpec) -> StaggeredDiDS
         'group_effects': att_gt_group,
         'column_mapping': column_mapping,
         'control_group': 'not_yet_treated',
-        'estimator': 'callaway_santanna_csdid'
+        'estimator': 'callaway_santanna_csdid',
+        'random_state': random_state,
+        'bootstrap_iterations': 1000
     }
     
     return spec
@@ -1040,4 +1052,3 @@ def fit_hainmueller_placebo_test(
 
     return spec
     
-

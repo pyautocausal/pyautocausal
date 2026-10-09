@@ -5,7 +5,7 @@ import pandas as pd
 
 from pyautocausal.pipelines.library.csdid.utils.bmisc import multiplier_bootstrap
 
-def mboot(inf_func, DIDparams, pl=False, cores=1):
+def mboot(inf_func, DIDparams, pl=False, cores=1, rng=None):
     # Setup needed variables
     data            = DIDparams['data'] 
     idname          = DIDparams['idname']
@@ -53,13 +53,13 @@ def mboot(inf_func, DIDparams, pl=False, cores=1):
     # Multiplier bootstrap
     n_clusters = n
     if not clustervars:
-        bres = np.sqrt(n) * run_multiplier_bootstrap(inf_func, biters, pl, cores)
+        bres = np.sqrt(n) * run_multiplier_bootstrap(inf_func, biters, pl, cores, rng=rng)
     else:
         n_clusters = len(data[clustervars].drop_duplicates())
         cluster = dta[[idname, clustervars]].drop_duplicates().values[:, 1]
         cluster_n = dta.groupby(cluster).size().values
         cluster_mean_if = pd.DataFrame(inf_func).groupby(cluster).sum().values / cluster_n
-        bres = np.sqrt(n_clusters) * run_multiplier_bootstrap(cluster_mean_if, biters, pl, cores)
+        bres = np.sqrt(n_clusters) * run_multiplier_bootstrap(cluster_mean_if, biters, pl, cores, rng=rng)
 
     # Handle vector and matrix case differently to get nxk matrix
     if isinstance(bres, np.ndarray) and bres.ndim == 1:
@@ -92,23 +92,25 @@ def mboot(inf_func, DIDparams, pl=False, cores=1):
 
     return {'bres': bres, 'V': V, 'se': se, 'crit_val': crit_val}
 
-def run_multiplier_bootstrap(inf_func, biters, pl=False, cores=1):
+def run_multiplier_bootstrap(inf_func, biters, pl=False, cores=1, rng=None):
+    rng = np.random.default_rng(rng)
     ngroups = int(np.ceil(biters / cores))
     chunks = [ngroups] * cores
     chunks[0] += biters - sum(chunks)
 
     n = inf_func.shape[0]
 
-    def parallel_function(biters):
-        return multiplier_bootstrap(inf_func, biters)
-
     if n > 2500 and pl and cores > 1:
+        # Each worker gets a separate reproducible stream, avoiding inherited
+        # or shared process-global NumPy state.
+        seeds = rng.integers(0, np.iinfo(np.int64).max, size=len(chunks))
         results = Parallel(n_jobs=cores)(
-            delayed(parallel_function)(biters) for biters in chunks
+            delayed(multiplier_bootstrap)(inf_func, count, rng=int(seed))
+            for count, seed in zip(chunks, seeds)
         )
         results = np.vstack(results)
     else:
-        results = multiplier_bootstrap(inf_func, biters)
+        results = multiplier_bootstrap(inf_func, biters, rng=rng)
 
     return results
 

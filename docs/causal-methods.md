@@ -12,6 +12,8 @@ OLS coefficients require an appropriate functional form and identifying assumpti
 
 Both the never-treated and not-yet-treated wrappers must use the requested comparison group and covariate formula. Identification requires the corresponding parallel-trends and no-anticipation assumptions. Report the actual controls and aggregation target. A no-control model is not equivalent to a covariate-adjusted design.
 
+The wrappers use `random_state=42` by default for reproducible multiplier-bootstrap inference and record the seed and iteration count in exported provenance. Supply another integer seed to assess simulation variation, or `None` for a nondeterministic run. Fitting does not alter global NumPy random state.
+
 The bundled implementation is adapted from the Python C&S implementation. The scientific tests compare wrapper behavior to direct calls with the same settings and exercise known-effect fixtures. They do not establish validity for arbitrary datasets.
 
 ## Synthetic DiD
