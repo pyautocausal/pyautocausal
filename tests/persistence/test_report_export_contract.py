@@ -44,6 +44,72 @@ def test_static_html_conversion_respects_hidden_input_tags(tmp_path):
     assert 'visible saved result' in html
 
 
+def test_default_report_keeps_outputs_and_folds_technical_details(tmp_path):
+    data = pd.DataFrame({'y': [2., 4.]})
+
+    def summarize(data):
+        """Outcome summary.
+
+        Args:
+            data: Observed outcomes.
+        """
+        return data.describe()
+
+    graph = ExecutableGraph().create_input_node('data', pd.DataFrame)
+    graph.create_node('summary', summarize, ['data']).fit(data=data)
+    export_outputs(graph, df=data, output_path=tmp_path, title='Study <2026>')
+
+    notebook = nbformat.read(tmp_path / 'pipeline_execution.ipynb', as_version=4)
+    html = (tmp_path / 'pipeline_execution.html').read_text()
+    assert notebook.metadata.title == 'Study <2026>'
+    assert 'Study &lt;2026&gt;' in html
+    assert 'def</span> <span class="nf">summary_function' not in html
+    assert any(cell.outputs for cell in notebook.cells if cell.cell_type == 'code')
+    assert any('text/html' in output.get('data', {})
+               for cell in notebook.cells if cell.cell_type == 'code'
+               for output in cell.outputs)
+    markdown = '\n'.join(cell.source for cell in notebook.cells if cell.cell_type == 'markdown')
+    assert '<details><summary>Method documentation</summary>' in markdown
+    assert 'Args:' in markdown
+    assert markdown.index('## Analysis') < markdown.index('## Workflow')
+    assert notebook.metadata.pyautocausal['nodes']['summary']['state'] == 'completed'
+
+
+def test_notebook_renders_figures_with_noninteractive_backend(tmp_path):
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    def make_plot(data):
+        import matplotlib.pyplot as plt
+        fig, ax = plt.subplots()
+        ax.plot(data.y)
+        return fig
+
+    data = pd.DataFrame({'y': [2., 4.]})
+    graph = ExecutableGraph().create_input_node('data', pd.DataFrame)
+    graph.create_node('plot', make_plot, ['data']).fit(data=data)
+    export_outputs(graph, df=data, output_path=tmp_path)
+    plt.close(graph.get('plot').get_result_value())
+
+    notebook = nbformat.read(tmp_path / 'pipeline_execution.ipynb', as_version=4)
+    figures = [output for cell in notebook.cells if cell.cell_type == 'code'
+               for output in cell.outputs if 'image/png' in output.get('data', {})]
+    assert len(figures) == 1
+    assert 'data:image/png;base64,' in (tmp_path / 'pipeline_execution.html').read_text()
+
+
+def test_expanded_notebook_keeps_all_code_visible(tmp_path):
+    def answer():
+        return 42
+
+    graph = ExecutableGraph().create_node('answer', answer).execute_graph()
+    path = tmp_path / 'expanded.ipynb'
+    NotebookExporter(graph).export_notebook(path, compact=False)
+    notebook = nbformat.read(path, as_version=4)
+    assert not any('hide-input' in cell.metadata.get('tags', []) for cell in notebook.cells)
+
+
 def test_dataframe_report_replay_preserves_labels_types_and_index(tmp_path):
     def count_units(data) -> int:
         assert str(data.observed.dtype) == 'datetime64[ns, Europe/Berlin]'

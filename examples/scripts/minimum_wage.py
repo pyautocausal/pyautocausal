@@ -11,7 +11,8 @@ def main():
     args = parser.parse_args()
     data = minimum_wage.copy()
     graph = create_panel_graph(args.output).fit(df=data)
-    export_outputs(graph, df=data, output_path=args.output)
+    export_outputs(graph, df=data, output_path=args.output,
+                   title='Minimum Wage: Staggered Difference-in-Differences')
 
 
 if __name__ == '__main__':

@@ -18,6 +18,7 @@ _HIDDEN_INPUT_ARGS = (
     "--TagRemovePreprocessor.enabled=True",
     "--TagRemovePreprocessor.remove_input_tags=['hide-input']",
 )
+_HTML_TEMPLATE = Path(__file__).with_name("report.html.j2")
 
 
 @contextmanager
@@ -48,10 +49,11 @@ def run_notebook_and_create_html(
     working_directory: Optional[str | Path] = None
 ) -> Path:
     """
-    Run a Jupyter notebook and convert it to HTML.
+    Run a Jupyter notebook, save its outputs, and convert it to HTML.
     
     This function executes all cells in a notebook and then converts the
-    executed notebook to HTML format with output preserved.
+    executed notebook to HTML format with output preserved in both files.
+    Execution failures leave the source notebook unchanged.
     
     Args:
         notebook_path: Path to the input notebook file (.ipynb)
@@ -96,17 +98,27 @@ def run_notebook_and_create_html(
     logger.info(f"Output HTML will be saved to: {output_html_path}")
     
     try:
-        with _execution_kernel(kernel_name) as (selected_kernel, env):
-            cmd = [
-                sys.executable, "-m", "nbconvert", "--to", "html", "--execute",
-                "--ExecutePreprocessor.timeout", str(timeout),
-                "--ExecutePreprocessor.kernel_name", selected_kernel,
-                "--output", str(output_html_path.absolute()),
-                str(notebook_path.absolute())
-            ]
-            cmd.extend(_HIDDEN_INPUT_ARGS)
-            subprocess.run(cmd, cwd=working_directory, check=True,
-                           capture_output=True, text=True, env=env)
+        with tempfile.TemporaryDirectory(prefix=".pyautocausal-", dir=notebook_path.parent) as directory:
+            executed_path = Path(directory).absolute() / notebook_path.name
+            with _execution_kernel(kernel_name) as (selected_kernel, env):
+                cmd = [
+                    sys.executable, "-m", "nbconvert", "--to", "notebook", "--execute",
+                    # User HTML export settings must never remove source cells or metadata.
+                    "--NotebookExporter.default_preprocessors=['nbconvert.preprocessors.ExecutePreprocessor']",
+                    "--NotebookExporter.preprocessors=[]",
+                    "--ExecutePreprocessor.allow_errors=False",
+                    "--ExecutePreprocessor.timeout", str(timeout),
+                    "--ExecutePreprocessor.kernel_name", selected_kernel,
+                    "--output", str(executed_path),
+                    str(notebook_path.absolute())
+                ]
+                subprocess.run(cmd, cwd=working_directory, check=True,
+                               capture_output=True, text=True, env=env)
+            # Only replace a source notebook after every cell executes successfully.
+            executed_path.chmod(notebook_path.stat().st_mode)
+            executed_path.replace(notebook_path)
+
+        convert_notebook_to_html(notebook_path, output_html_path)
 
         logger.info(f"Successfully executed notebook and created HTML: {output_html_path}")
         return output_html_path
@@ -166,6 +178,9 @@ def convert_notebook_to_html(
         cmd = [
             sys.executable, "-m", "nbconvert",
             "--to", "html",
+            "--ExecutePreprocessor.enabled=False",
+            "--HTMLExporter.preprocessors=[]",
+            "--template-file", str(_HTML_TEMPLATE),
             "--output", str(output_html_path.absolute()),
             str(notebook_path.absolute())
         ]

@@ -13,7 +13,8 @@ def main():
         'state': 'id_unit', 'year': 't', 'treated': 'treat', 'cigsale': 'y',
     })[['id_unit', 't', 'treat', 'y']].copy()
     graph = create_panel_graph(args.output).fit(df=data)
-    export_outputs(graph, df=data, output_path=args.output)
+    export_outputs(graph, df=data, output_path=args.output,
+                   title='California Proposition 99: Synthetic Control Analysis')
 
 
 if __name__ == '__main__':

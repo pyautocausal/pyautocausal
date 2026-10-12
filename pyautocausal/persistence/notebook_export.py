@@ -6,6 +6,7 @@ import inspect
 import ast
 import textwrap
 import json
+from html import escape
 from pathlib import Path
 from ..orchestration.nodes import Node, InputNode, DecisionNode
 from ..orchestration.graph import ExecutableGraph
@@ -30,28 +31,57 @@ class NotebookExporter:
         # get module this is run from
         self.this_module = inspect.getmodule(inspect.getouterframes(inspect.currentframe())[1][0])
         self.needed_imports = set()
-        self.compact = False
+        self.compact = True
     def _get_topological_order(self) -> List[Node]:
         """Get a valid sequential order of nodes for the notebook."""
         return list(nx.topological_sort(self.graph))
     
-    def _create_header(self) -> None:
+    def _create_header(self, title: Optional[str] = None) -> None:
         """Create header cell with metadata about the graph execution."""
-        header = "# Causal Analysis Pipeline\n\n"
-        header += "This notebook was automatically generated from a PyAutoCausal pipeline execution.\n\n"
+        header = f"# {escape(title or 'Causal Analysis Pipeline')}\n\n"
+        header += "A reproducible analysis generated with **PyAutoCausal**.\n\n"
         
         counts = {}
         for node in self.graph.nodes:
             counts[node.state.value] = counts.get(node.state.value, 0) + 1
-        header += "Original execution: " + ", ".join(f"{count} {state}" for state, count in sorted(counts.items())) + ".\n\n"
-        header += "Execution diagnostics, settings, sample information and package versions appear at the end.\n"
+        labels = {'passed': 'not selected'}
+        header += "**Original run:** " + " · ".join(
+            f"{count} {labels.get(state, state)}" for state, count in sorted(counts.items())) + ".\n\n"
+        header += (
+            "[Setup](#setup) · [Analysis](#analysis) · "
+            "[Execution details](#execution-details) · [Workflow](#workflow)\n\n"
+            "> Tables and figures below are produced when these cells run. "
+            "The execution record in the appendix describes the original run. "
+            "If you change the input data, rerun the original graph to re-evaluate its method selection.\n"
+        )
         self.nb.cells.append(new_markdown_cell(header))
     
     def _create_imports_cell(self, cell_index: int) -> None:
         """Create cell with all necessary imports."""
         all_imports = "\n".join(sorted(self.needed_imports))
         # insert cell at cell_index
-        self.nb.cells.insert(cell_index, new_code_cell(all_imports))
+        self.nb.cells.insert(cell_index, self._code_cell(all_imports, 'setup'))
+
+    def _code_cell(self, source: str, role: str):
+        cell = new_code_cell(source, metadata={'tags': [role]})
+        if self.compact and role in {'setup', 'implementation', 'display'}:
+            cell.metadata['jupyter'] = {'source_hidden': True}
+            cell.metadata['tags'].append('hide-input')
+        return cell
+
+    def _create_node_heading(self, node: Node) -> None:
+        description = inspect.cleandoc(node.node_description or '')
+        first_line = description.split('\n', 1)[0]
+        title = first_line if first_line and len(first_line) <= 120 else node.name.replace('_', ' ').capitalize()
+        if isinstance(node, InputNode) and not description:
+            title = 'Input data'
+        info = f"### {escape(title)}\n\n<small>Step: <code>{escape(node.name)}</code></small>\n"
+        if description and description != title:
+            info += (
+                "\n<details><summary>Method documentation</summary>\n\n"
+                f"{description}\n\n</details>\n"
+            )
+        self.nb.cells.append(new_markdown_cell(info))
     
     def _is_exposed_wrapper(self, func) -> bool:
         """Check if a function is decorated with expose_in_notebook."""
@@ -510,26 +540,22 @@ class NotebookExporter:
     
     def _create_node_cells(self, node: Node) -> None:
         """Create cells for a single node's execution."""
-        # Add markdown cell with node info
-        info = f"## Node: {node.name}\n"
-        if node.node_description:
-            info += f"{node.node_description}\n"
-        self.nb.cells.append(new_markdown_cell(info))
+        self._create_node_heading(node)
     
         if not isinstance(node, InputNode):
             func_def = self._format_function_definition(node)
-            implementation = new_code_cell(func_def)
-            if self.compact:
-                implementation.metadata['jupyter'] = {'source_hidden': True}
-                implementation.metadata['tags'] = ['implementation', 'hide-input']
-            self.nb.cells.append(implementation)
+            self.nb.cells.append(self._code_cell(func_def, 'implementation'))
         
             exec_code = self._format_function_execution(node, func_def)
-            self.nb.cells.append(new_code_cell(exec_code))
+            if not node.display_function:
+                exec_code = ('with _pac_capture_step_output() as _pac_stdout:\n'
+                             + textwrap.indent(exec_code, '    ')
+                             + f'\n_pac_display_result({node.name}_output, printed=_pac_stdout.getvalue())')
+            self.nb.cells.append(self._code_cell(exec_code, 'analysis'))
         
             if node.display_function:
                 notebook_display_code = self._format_display_function_call(node)
-                self.nb.cells.append(new_code_cell(notebook_display_code))
+                self.nb.cells.append(self._code_cell(notebook_display_code, 'display'))
     
     def _format_display_function_call(self, node: Node) -> str:
         """Format the display function call for a node. This simply
@@ -542,11 +568,7 @@ class NotebookExporter:
 
     def _create_input_node_cells(self, node: InputNode, has_data_loading: bool = False) -> None:
         """Create cells for a single input node's execution."""
-        # Add markdown cell with node info
-        info = f"## Node: {node.name}\n"
-        if node.node_description:
-            info += f"{node.node_description}\n"
-        self.nb.cells.append(new_markdown_cell(info))
+        self._create_node_heading(node)
         
         if has_data_loading:
             # For data loading, use the loaded data directly
@@ -556,7 +578,9 @@ class NotebookExporter:
             # Add execution cell which is just a comment telling the user to provide the input
             exec_code = f"# TODO: Load your input data for '{node.name}' here\n{node.name}_output = None  # Replace with your data"
         
-        self.nb.cells.append(new_code_cell(exec_code))
+        if has_data_loading:
+            exec_code += f"\n_pac_display_result({node.name}_output)"
+        self.nb.cells.append(self._code_cell(exec_code, 'analysis'))
 
     def _extract_imports_from_loading_function(self, loading_function: str) -> None:
         """Extract and add necessary imports based on the loading function string."""
@@ -577,7 +601,7 @@ class NotebookExporter:
             if pattern in loading_function:
                 self.needed_imports.add(import_stmt)
 
-    def export_notebook(self, filepath: str, data_path: Optional[str] = None, loading_function: Optional[str] = None, compact: bool = False) -> None:
+    def export_notebook(self, filepath: str, data_path: Optional[str] = None, loading_function: Optional[str] = None, compact: bool = True, title: Optional[str] = None) -> None:
         """
         Export the graph execution as a Jupyter notebook.
         
@@ -585,7 +609,8 @@ class NotebookExporter:
             filepath: Path where the notebook should be saved
             data_path: Optional path to data file to load
             loading_function: Optional function string to load the data (e.g., 'pd.read_csv')
-            compact: Mark implementation cells as collapsed without removing code or diagnostics
+            compact: Collapse setup and implementation code (default: True)
+            title: Analysis title shown at the top of the notebook
         """
         if data_path is not None and loading_function is not None:
             completed_inputs = [node.name for node in self.graph.nodes
@@ -599,16 +624,21 @@ class NotebookExporter:
         self.compact = compact
         # Reset notebook and imports to ensure clean state
         self.nb = new_notebook()
-        self.needed_imports = set()
+        self.nb.metadata['title'] = title or 'Causal Analysis Pipeline'
+        self.needed_imports = {
+            'from pyautocausal.persistence.notebook_display import display_result as _pac_display_result',
+            'from pyautocausal.persistence.notebook_display import capture_step_output as _pac_capture_step_output',
+        }
         
         # Create header
-        self._create_header()
-        
-        # Get graph visualization without title
-        markdown_content = visualize_graph(self.graph)
-        # Remove the title line and empty line after it
-        markdown_content = "\n".join(markdown_content.split("\n")[1:])
-        self.nb.cells.append(new_markdown_cell(markdown_content))
+        self._create_header(title)
+        self.nb.cells.append(new_markdown_cell(
+            '<a id="setup"></a>\n\n## Setup\n\n'
+            'Load the saved input and the functions used in this analysis. '
+            'The executable setup code is retained in the Jupyter notebook.'))
+        self.nb.cells.append(new_markdown_cell(
+            '<a id="analysis"></a>\n\n## Analysis\n\n'
+            'Steps follow the dependency order of the completed pipeline.'))
 
         # Extract imports from data loading function (if provided)
         if data_path and loading_function:
@@ -627,32 +657,41 @@ class NotebookExporter:
                 else:
                     self._create_node_cells(node)
 
-        # Now insert imports cell at the right position (after header/visualization, before everything else)
-        imports_position = 2  # After header (0) and visualization (1)
+        # Imports and data loading precede every analysis step.
+        imports_position = 2
         self._create_imports_cell(imports_position)
 
         # Add data loading cell after imports (if both parameters are provided)
         if data_path and loading_function:
             data_loading_position = imports_position + 1  # Right after imports
             
-            # Get input node names to create proper dictionary structure
-            input_node_names = [node.name for node in self._get_topological_order() 
-                              if isinstance(node, InputNode) and node.is_completed()]
-            
             # Always load data directly into input_data (to match test expectations)
             data_loading_code = f"""# Load input data
 input_data = {loading_function}({data_path!r})"""
             
-            self.nb.cells.insert(data_loading_position, new_code_cell(data_loading_code))
+            self.nb.cells.insert(data_loading_position, self._code_cell(data_loading_code, 'setup'))
         
         report = self.graph.execution_report()
         self.nb.metadata['pyautocausal'] = report
+        packages = {'Python': report['python_version'], **report['package_versions']}
+        environment = '<table class="pac-table"><thead><tr><th>Package</th><th>Version</th></tr></thead><tbody>'
+        environment += ''.join(
+            f'<tr><th>{escape(name)}</th><td>{escape(value)}</td></tr>'
+            for name, value in packages.items()) + '</tbody></table>'
         self.nb.cells.append(new_markdown_cell(
-            "## Execution diagnostics and provenance\n\n"
-            "This notebook replays the completed path from the original run. "
-            "Changed input data may require running the original graph to select a new path.\n\n"
-            "```json\n" + json.dumps(report, indent=2) + "\n```"
+            '<a id="execution-details"></a>\n\n## Execution diagnostics and provenance\n\n'
+            '**Original run snapshot.** These settings and diagnostics were recorded before '
+            'notebook replay; they do not update when you edit or rerun cells. '
+            'The full record is also stored in `notebook.metadata["pyautocausal"]`.\n\n'
+            + environment + '\n\n'
+            '<details><summary>Original settings, samples and node diagnostics</summary>\n'
+            '<pre>' + escape(json.dumps(report, indent=2)) + '</pre>\n</details>'
         ))
+        markdown_content = '\n'.join(visualize_graph(self.graph).split('\n')[1:])
+        self.nb.cells.append(new_markdown_cell(
+            '<a id="workflow"></a>\n\n## Workflow\n\n'
+            '<details><summary>View the original pipeline and branch decisions</summary>\n\n'
+            + markdown_content + '\n\n</details>'))
 
         # Save the notebook
         with open(filepath, 'w', encoding='utf-8') as f:
@@ -666,7 +705,8 @@ input_data = {loading_function}({data_path!r})"""
         loading_function: Optional[str] = None,
         timeout: int = 600,
         kernel_name: Optional[str] = None,
-        compact: bool = False
+        compact: bool = True,
+        title: Optional[str] = None
     ) -> Path:
         """
         Export the graph as a notebook, execute it, and convert to HTML.
@@ -679,7 +719,8 @@ input_data = {loading_function}({data_path!r})"""
             html_filepath: Path for the output HTML file. If None, uses same name as notebook with .html extension
             data_path: Optional path to data file to load
             loading_function: Optional function string to load the data (e.g., 'pd.read_csv')
-            compact: Mark implementation cells as collapsed without removing code or diagnostics
+            compact: Collapse setup and implementation code (default: True)
+            title: Analysis title shown at the top of the notebook
             timeout: Maximum time in seconds to wait for each cell execution (default: 600)
             kernel_name: Explicit Jupyter kernel name, or None for the current Python interpreter
             
@@ -692,7 +733,7 @@ input_data = {loading_function}({data_path!r})"""
         notebook_filepath = Path(notebook_filepath)
         
         # Export the notebook first
-        self.export_notebook(str(notebook_filepath), data_path, loading_function, compact=compact)
+        self.export_notebook(str(notebook_filepath), data_path, loading_function, compact=compact, title=title)
         
         # Set HTML output path if not provided
         if html_filepath is None:

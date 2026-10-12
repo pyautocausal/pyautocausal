@@ -3,11 +3,11 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 from matplotlib.patches import FancyArrowPatch
 
-def plot_synthdid(est, effect_curve=None, figsize=(10, 6), title=None, 
-                 ylabel="Outcome", xlabel="Time", 
-                 control_color="salmon", treated_color="turquoise", 
-                 effect_color="salmon", guide_color="black",
-                 diagonal_guide_color="black", diagonal_guide_alpha=0.5,
+def plot_synthdid(est, effect_curve=None, figsize=(10, 5.5), title=None,
+                 ylabel="Outcome", xlabel="Period",
+                 control_color="#475569", treated_color="#087F8C",
+                 effect_color="#B7791F", guide_color="#64748B",
+                 diagonal_guide_color="#475569", diagonal_guide_alpha=0.5,
                  ci_level=0.95, ci_alpha=0.3,
                  show_effect_area=True, show_guides=True, show_arrow=True,
                  vertical_line=True, legend=True, lambda_plot_scale=3):
@@ -29,9 +29,9 @@ def plot_synthdid(est, effect_curve=None, figsize=(10, 6), title=None,
     xlabel : str, optional
         X-axis label
     control_color : str, optional
-        Color for synthetic control units (red by default)
+        Color for synthetic control units (slate by default)
     treated_color : str, optional
-        Color for treated units (blue by default)
+        Color for treated units (teal by default)
     effect_color : str, optional
         Color for the treatment effect area
     guide_color : str, optional
@@ -136,10 +136,8 @@ def plot_synthdid(est, effect_curve=None, figsize=(10, 6), title=None,
     synthetic_post = treated_pre + (control_post - control_pre)
     
     # Plot main trajectories
-    # Treated - blue line
     treated_line = ax.plot(time_points, obs_trajectory, color=treated_color, label="Treated", linestyle="-", linewidth=2)[0]
-    # Synthetic control - red line
-    control_line = ax.plot(time_points, syn_trajectory, color=control_color, label="Synthetic Control", linestyle="-", linewidth=2)[0]
+    control_line = ax.plot(time_points, syn_trajectory, color=control_color, label="Synthetic Control", linestyle="--", linewidth=2)[0]
     
     # Add lambda weights visualization (ribbon) at the bottom
     if lambda_plot_scale > 0:
@@ -154,9 +152,8 @@ def plot_synthdid(est, effect_curve=None, figsize=(10, 6), title=None,
         # Use the actual lambda weights directly
         y_top = bottom + height * weights['lambda']
         
-        # Add the ribbon with black edge
-        ax.fill_between(x_lambda, y_bottom, y_top, color=control_color, alpha=0.6,
-                       edgecolor='black', linewidth=0.5)
+        ax.fill_between(x_lambda, y_bottom, y_top, color=control_color, alpha=0.2,
+                       linewidth=0)
     
 
     if show_guides:
@@ -206,10 +203,10 @@ def plot_synthdid(est, effect_curve=None, figsize=(10, 6), title=None,
         # Plot the actual signed period effects; never fabricate a decorative
         # random walk or discard the sign of the estimated effect.
         ax.fill_between(time_points[T0:], 0, effect_curve,
-                        color=effect_color, alpha=0.7, label="Period treatment effect")
+                        color=effect_color, alpha=0.25, label="Period treatment effect")
         ax.plot(time_points[T0:], effect_curve, color=effect_color,
                 linewidth=1, label="Effect curve")
-        ax.axhline(y=0, color='black', linewidth=1)
+        ax.axhline(y=0, color=guide_color, linewidth=1)
     if vertical_line:
         ax.axvline(time_points[T0], color=guide_color, linestyle=':', label="Treatment begins")
     
@@ -223,9 +220,9 @@ def plot_synthdid(est, effect_curve=None, figsize=(10, 6), title=None,
 
     # Add labels and title
     if title:
-        ax.set_title(title)
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
+        ax.set_title(title, fontsize=14, loc='left', pad=14, color='#0F172A')
+    ax.set_xlabel(xlabel, fontsize=11)
+    ax.set_ylabel(ylabel, fontsize=11)
     
     # Set y-axis to include zero
     ylim = ax.get_ylim()
@@ -249,8 +246,13 @@ def plot_synthdid(est, effect_curve=None, figsize=(10, 6), title=None,
     # Make x-axis ticks integers
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
     
-    # Add grid for better readability (like in R plot)
-    ax.grid(True, linestyle='-', alpha=0.2)
+    ax.set_axisbelow(True)
+    ax.grid(True, axis='y', color='#E2E8F0', linewidth=.7)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_color('#CBD5E1')
+    ax.spines['bottom'].set_color('#CBD5E1')
+    ax.tick_params(labelsize=10, colors='#475569')
     
     # Add legend if requested
     if legend:
@@ -258,16 +260,18 @@ def plot_synthdid(est, effect_curve=None, figsize=(10, 6), title=None,
         if show_guides:
             ax.legend([treated_line, control_line, counterfactual_line], 
                      ['Treated', 'Synthetic Control', 'Counterfactual Trend'], 
-                     loc='upper right')
+                     loc='lower center', bbox_to_anchor=(.5, -.25), ncol=3,
+                     frameon=False, fontsize=9)
         else:
-            ax.legend(loc='upper right')
+            ax.legend(loc='lower center', bbox_to_anchor=(.5, -.3), ncol=3,
+                      frameon=False, fontsize=9)
     
     # Add estimate text
     uncertainty = f"SE: {se:.2f}" if se is not None else "uncertainty unavailable"
     est_text = f"Estimate: {est.estimate:.2f} ({uncertainty})"
-    ax.text(0.05, 0.95, est_text, transform=ax.transAxes, 
-            bbox=dict(facecolor='white', alpha=0.8, boxstyle='round'),
-            verticalalignment='top')
-
+    ax.text(0.02, 0.97, est_text, transform=ax.transAxes,
+            bbox=dict(facecolor='white', edgecolor='#E2E8F0', alpha=0.9, boxstyle='round,pad=.5'),
+            verticalalignment='top', fontsize=10, color='#475569')
+    fig.tight_layout()
     
     return fig, ax

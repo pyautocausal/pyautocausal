@@ -6,7 +6,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pyautocausal.pipelines.library.plots import event_study_plot
+from pyautocausal.pipelines.library.plots import (
+    callaway_santana_event_study_plot,
+    event_study_plot,
+)
 from pyautocausal.pipelines.library.specifications import EventStudySpec, StaggeredDiDSpec
 
 
@@ -44,3 +47,25 @@ def test_zero_effect_keeps_its_confidence_interval_in_rendered_plot(spec_type, r
         assert all(segment[0, 0] != reference_period for segment in segments)
     finally:
         plt.close(figure)
+
+
+def test_dynamic_plot_preserves_other_notebook_figures_and_intervals():
+    previous = plt.figure()
+    spec = SimpleNamespace(outcome_col='employment', model={
+        'att_gt_object': object(),
+        'dynamic_effects': SimpleNamespace(atte={
+            'egt': [-1, 0, 1], 'att_egt': [0., .5, 1.],
+            'se_egt': [[.1, .2, .3]],
+        }),
+    })
+    figure = callaway_santana_event_study_plot(spec)
+    try:
+        assert plt.fignum_exists(previous.number)
+        assert len(figure.axes) == 1
+        figure.canvas.draw()
+        segments = figure.axes[0].collections[0].get_segments()
+        np.testing.assert_allclose(segments[1], [[0., .5 - 1.96 * .2],
+                                               [0., .5 + 1.96 * .2]])
+    finally:
+        plt.close(figure)
+        plt.close(previous)

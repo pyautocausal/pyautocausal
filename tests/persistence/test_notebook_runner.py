@@ -1,6 +1,7 @@
 import pytest
 import pandas as pd
 import tempfile
+import subprocess
 from pathlib import Path
 from pyautocausal.persistence.notebook_export import NotebookExporter
 from pyautocausal.persistence.notebook_runner import (
@@ -73,6 +74,98 @@ def test_convert_notebook_to_html(sample_notebook):
     
     assert '<html' in html_content
     assert 'Test Notebook' in html_content
+    assert 'pyautocausal-report-style' in html_content
+
+
+def test_run_saves_outputs_without_removing_code_or_metadata(tmp_path):
+    counter = tmp_path / 'executions.txt'
+    source = (
+        "from pathlib import Path\n"
+        f"counter = Path({str(counter)!r})\n"
+        "counter.write_text(counter.read_text() + 'run\\n' if counter.exists() else 'run\\n')\n"
+        "print('Saved analysis result')\n"
+        "# HIDDEN_SOURCE_MARKER"
+    )
+    notebook = new_notebook(
+        cells=[new_code_cell(source, metadata={
+            'tags': ['hide-input'], 'jupyter': {'source_hidden': True},
+            'custom': {'meaning': 'keep this'},
+        })],
+        metadata={'custom': {'analysis': 'keep this too'}, 'kernelspec': {
+            'name': 'python3', 'display_name': 'Python 3', 'language': 'python',
+        }},
+    )
+    path = tmp_path / 'saved.ipynb'
+    nbformat.write(notebook, path)
+
+    html_path = run_notebook_and_create_html(path)
+
+    saved = nbformat.read(path, as_version=4)
+    assert saved.cells[0].source == source
+    assert saved.cells[0].id == notebook.cells[0].id
+    assert saved.cells[0].metadata['custom'] == notebook.cells[0].metadata['custom']
+    assert saved.cells[0].metadata['tags'] == ['hide-input']
+    assert saved.cells[0].metadata['jupyter'] == {'source_hidden': True}
+    assert saved.metadata['custom'] == notebook.metadata['custom']
+    assert saved.metadata['kernelspec'] == notebook.metadata['kernelspec']
+    assert saved.cells[0].execution_count == 1
+    assert saved.cells[0].outputs[0].text == 'Saved analysis result\n'
+    assert counter.read_text() == 'run\n'
+    assert 'Saved analysis result' in html_path.read_text()
+    assert 'HIDDEN_SOURCE_MARKER' not in html_path.read_text()
+
+
+def test_failed_execution_leaves_source_and_previous_html_unchanged(tmp_path):
+    notebook = new_notebook(cells=[new_code_cell("print('partial result')\nraise ValueError('deliberate failure')")])
+    path = tmp_path / 'failed.ipynb'
+    nbformat.write(notebook, path)
+    original = path.read_bytes()
+    html_path = path.with_suffix('.html')
+    html_path.write_text('previous valid report')
+
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        run_notebook_and_create_html(path)
+
+    assert 'deliberate failure' in error.value.stderr
+    assert path.read_bytes() == original
+    assert html_path.read_text() == 'previous valid report'
+    assert not list(tmp_path.glob('.pyautocausal-*'))
+
+
+def test_user_export_config_cannot_remove_notebook_cells_or_repeat_execution(tmp_path, monkeypatch):
+    config_dir = tmp_path / 'jupyter'
+    config_dir.mkdir()
+    (config_dir / 'jupyter_nbconvert_config.py').write_text(
+        "c.TagRemovePreprocessor.enabled = True\n"
+        "c.TagRemovePreprocessor.remove_cell_tags = {'remove-cell'}\n"
+        "c.TagRemovePreprocessor.remove_all_outputs_tags = {'remove-cell'}\n"
+        "c.ClearMetadataPreprocessor.enabled = True\n"
+        "c.NotebookExporter.preprocessors = ['nbconvert.preprocessors.ClearMetadataPreprocessor']\n"
+        "c.ExecutePreprocessor.enabled = True\n"
+        "c.HTMLExporter.preprocessors = ['nbconvert.preprocessors.ExecutePreprocessor']\n"
+    )
+    monkeypatch.setenv('JUPYTER_CONFIG_DIR', str(config_dir))
+    counter = tmp_path / 'executions.txt'
+    source = (
+        "from pathlib import Path\n"
+        f"counter = Path({str(counter)!r})\n"
+        "counter.write_text(counter.read_text() + 'run\\n' if counter.exists() else 'run\\n')\n"
+        "print('Saved result')"
+    )
+    cell = new_code_cell(source, metadata={'tags': ['remove-cell'], 'custom': 'retained'})
+    notebook = new_notebook(cells=[cell], metadata={'custom': 'also retained'})
+    path = tmp_path / 'configured.ipynb'
+    nbformat.write(notebook, path)
+
+    run_notebook_and_create_html(path)
+
+    saved = nbformat.read(path, as_version=4)
+    assert len(saved.cells) == 1
+    assert saved.cells[0].source == source
+    assert saved.cells[0].metadata['custom'] == 'retained'
+    assert saved.metadata['custom'] == 'also retained'
+    assert saved.cells[0].outputs[0].text == 'Saved result\n'
+    assert counter.read_text() == 'run\n'
 
 
 def test_convert_notebook_to_html_custom_path(sample_notebook, tmp_path):
@@ -187,4 +280,4 @@ if __name__ == "__main__":
             html_path = convert_notebook_to_html(sample_nb)
             print(f"Successfully created HTML: {html_path}")
         except Exception as e:
-            print(f"Error: {e}") 
+            print(f"Error: {e}")

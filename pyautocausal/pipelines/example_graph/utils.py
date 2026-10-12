@@ -68,13 +68,14 @@ def export_outputs(
     output_path: Path = None,
     data_filename: str = "data.csv",
     *,
-    compact: bool = False,
+    compact: bool = True,
+    title: Optional[str] = None,
 ) -> None:
     """Export graph visualization, notebook, and HTML report.
     
     This function creates:
     1. A markdown visualization of the graph structure
-    2. A Jupyter notebook with the analysis code
+    2. A Jupyter notebook with the analysis code and executed results
     3. An HTML report with executed results
     
     Args:
@@ -84,7 +85,8 @@ def export_outputs(
             A CSV copy is saved for inspection and a typed Parquet snapshot for replay.
         output_path: Base output directory
         data_filename: Name to use when saving DataFrame (default: "data.csv")
-        compact: Hide implementation inputs in HTML while retaining notebook code
+        compact: Collapse setup/implementation code and hide it in HTML (default: True)
+        title: Analysis title shown in the notebook and HTML report
     
     Raises:
         ValueError: If neither or both data_path and df are provided
@@ -157,7 +159,7 @@ def export_outputs(
         report['export']['stage'] = 'notebook'
         exporter.export_notebook(
             str(notebook_path), data_path=data_file_name,
-            loading_function=loading_function, compact=compact,
+            loading_function=loading_function, compact=compact, title=title,
         )
         print(f"Notebook exported to {notebook_path}")
 
@@ -169,6 +171,7 @@ def export_outputs(
             loading_function=loading_function,
             timeout=300,  # 5 minutes timeout
             compact=compact,
+            title=title,
         )
         print(f"HTML report with executed results exported to {html_output_path}")
     except Exception as e:
