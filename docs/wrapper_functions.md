@@ -1,128 +1,67 @@
-# Working with Wrapper Functions and Notebook Export
+# Wrapper functions and notebook export
 
-PyAutoCausal's node-based architecture requires that function parameters match the names of predecessor nodes. While this provides clarity in your pipeline definition, it can lead to wrapper functions that obscure the actual implementation when exported to notebooks.
-
-## The Challenge
-
-Consider this common scenario:
+Graph node names do not have to match function parameter names. For a simple rename, use an explicit predecessor mapping; a wrapper is unnecessary:
 
 ```python
-from external_library import complex_function
+from pyautocausal import ExecutableGraph
 
-# The complex_function expects 'df' as parameter, but our node is named 'data'
-def wrapper_function(data):
-    return complex_function(df=data)
 
-# In your graph
-graph.create_node("process_data", wrapper_function, predecessors=["data"])
+def mean_value(values: list) -> float:
+    return sum(values) / len(values)
+
+
+graph = ExecutableGraph().create_input_node("observations", list)
+graph.create_node("mean", mean_value, predecessors={"values": "observations"})
+graph.fit(observations=[1, 2, 3])
+assert graph.get("mean").get_result_value() == 2.0
 ```
 
-When this graph is exported to a notebook, users only see the wrapper function, not the actual implementation in `complex_function`.
+The mapping direction is **function parameter → predecessor node name**. See the [pipeline guide](pipeline-guide.md) for multiple inputs and alternative predecessors.
 
-## The Solution: `expose_in_notebook` Decorator
+## Exposing a thin wrapper's target
 
-PyAutoCausal provides the `expose_in_notebook` decorator to solve this problem:
+Existing code may use wrappers to rename arguments. `expose_in_notebook` attaches metadata telling the exporter which target to show and call. Its `arg_mapping` direction is **wrapper parameter → target parameter**.
 
-```python
-from pyautocausal.persistence.notebook_decorators import expose_in_notebook
-from external_library import complex_function
-
-@expose_in_notebook(
-    target_function=complex_function,
-    arg_mapping={'data': 'df'}
-)
-def wrapper_function(data):
-    return complex_function(df=data)
-```
-
-When the graph is exported to a notebook, both the wrapper and the target function will be included, with clear documentation on how they're related.
-
-## Example
-
-### Original Code
+Save this as `wrapper_demo.py` and run it with the [notebook extra](../README.md#installation) installed:
 
 ```python
+from pathlib import Path
 import pandas as pd
-from statsmodels.regression.linear_model import OLS
-from statsmodels.tools import add_constant
+from pyautocausal import ExecutableGraph, export_outputs
+from pyautocausal.persistence.notebook_decorators import expose_in_notebook
 
-# Complex statistical function with specific parameter names
-def run_ols_regression(df, formula=None):
-    """Run OLS regression."""
-    y = df['outcome']
-    X = df[['treatment', 'covariate1', 'covariate2']]
-    X = add_constant(X)
-    model = OLS(y, X).fit()
-    return model.summary()
 
-# Wrapper function to adapt node names to parameter names
+def mean_outcome(df: pd.DataFrame, scale: float = 1.0) -> float:
+    """Return a scaled mean outcome."""
+    return float(df["y"].mean()) * scale
+
+
 @expose_in_notebook(
-    target_function=run_ols_regression,
-    arg_mapping={'data': 'df'}
+    target_function=mean_outcome,
+    arg_mapping={"data": "df", "multiplier": "scale"},
 )
-def ols_node_action(data):
-    return run_ols_regression(df=data)
+def mean_action(data: pd.DataFrame, multiplier: float = 1.0) -> float:
+    return mean_outcome(df=data, scale=multiplier)
 
-# In your graph
-graph.create_node("ols", ols_node_action, predecessors=["data"])
+
+data = pd.DataFrame({"y": [1.0, 2.0, 3.0]})
+output = Path("wrapper-output")
+graph = ExecutableGraph().configure_runtime(output_path=output)
+graph.create_input_node("data", pd.DataFrame)
+graph.create_node("mean", mean_action, predecessors=["data"], display_function=print)
+graph.fit(data=data)
+assert graph.get("mean").get_result_value() == 2.0
+export_outputs(graph, df=data, output_path=output)
 ```
 
-### Generated Notebook
+During normal graph execution, `mean_action` runs unchanged. In the notebook, the exporter resolves `mean_outcome`, includes its source or a supported module-backed definition, and calls it with mapped arguments. It does **not** promise to emit both function bodies or call the original wrapper.
 
-In the exported notebook, users will see:
+Use this decorator only for transparent argument adapters. Extra filtering, transformations, side effects or different defaults in a wrapper may be lost when the notebook calls the target directly. For such logic, export the undecorated action or make the transformation a separate graph node.
 
-```python
-# This node uses a wrapper function that calls a target function with adapted arguments
-# Argument mapping: 'data' → 'df'
+## Making exports portable
 
-def run_ols_regression(df, formula=None):
-    """Run OLS regression."""
-    y = df['outcome']
-    X = df[['treatment', 'covariate1', 'covariate2']]
-    X = add_constant(X)
-    model = OLS(y, X).fit()
-    return model.summary()
+Keep exposed targets at module scope with an importable module/name, and make their source inspectable. Nested target functions cannot be resolved through the stored dotted reference. Keep required imports at module scope or inside the function. The exporter analyzes imports, but it is not a general serializer for closures, global application state or unavailable dependencies.
 
-@expose_in_notebook(
-    target_function=run_ols_regression,
-    arg_mapping={'data': 'df'}
-)
-def ols_node_action(data):
-    return run_ols_regression(df=data)
+Run the generated notebook in the intended environment to verify replay. Built-in package helpers may remain imports, so install the same PyAutoCausal version and dependencies. The `df=` export route saves a checked Parquet snapshot; retain it beside the notebook. Notebook replay, run-context support, compact output and failure reporting are described in [exporting a reproducible report](pipeline-guide.md#exporting-a-reproducible-notebook-and-html-report).
 
-# In a different cell:
-ols_output = ols_node_action(data_output)
-# Alternatively, call the target function directly:
-# ols_output = run_ols_regression(df=data_output)
-```
-
-This gives notebook users the full context and options for modifying the code.
-
-## Benefits
-
-- **Maintains clean graph structure**: Keep using node names that match parameter names
-- **Exposes actual implementation**: Show users the real code, not just wrappers
-- **Documents parameter mapping**: Clearly explains how parameters are adapted
-- **Provides alternatives**: Users can choose to call either function
-- **Preserves imports**: Automatically includes necessary import statements
-
-## Advanced Usage
-
-You can handle complex parameter mappings:
-
-```python
-@expose_in_notebook(
-    target_function=complex_function,
-    arg_mapping={
-        'data': 'df',
-        'settings': 'options',
-        'alpha': 'significance_level'
-    }
-)
-def wrapper(data, settings, alpha=0.05):
-    return complex_function(
-        df=data,
-        options=settings,
-        significance_level=alpha
-    )
-``` 
+The package also uses `make_transformable(...).transform(...)` internally to adapt callable signatures. For user-defined graphs, explicit predecessor mappings are usually sufficient and avoid depending on that internal adapter pattern.

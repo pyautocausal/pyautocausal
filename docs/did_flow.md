@@ -1,57 +1,43 @@
-START
-│
-├─► 1. Nail down the causal target (ATT of what population? when?)            ──[Guide Step 1]:contentReference[oaicite:0]{index=0}:contentReference[oaicite:1]{index=1}
-│
-├─► 2. What does your panel look like?
-│       │
-│       ├─ Exactly 2 periods & 2 groups → Classic 2×2 DiD  
-│       │     Estimator = ΔYtreated − ΔYcontrol.  Stop here.
-│       │
-│       └─ More periods / staggered entry → go to 3
-│
-├─► 3. Pick a comparison group assumption
-│       │
-│       ├─ **Never-treated units available & credible?**  
-│       │        Yes → Assumption PT-GT-Nev → Estimator:  
-│       │              Callaway-Sant’Anna “never” or Sun-Abraham cohort-time averages:contentReference[oaicite:2]{index=2}:contentReference[oaicite:3]{index=3}
-│       │
-│       └─ No → Use not-yet-treated units  
-│                Assumption PT-GT-NYT → Estimator:  
-│                Callaway-Sant’Anna “nyt”, stacked DiD, local projections:contentReference[oaicite:4]{index=4}:contentReference[oaicite:5]{index=5}
-│
-├─► 4. Will you impose *full* parallel trends across **all** groups & times?  
-│       │           (PT-GT-all — strong and risky)  
-│       ├─ Yes → Estimator options: Extended TWFE (Wooldridge 2021),  
-│       │        Borusyak-Jaravel-Spiess, de Chaisemartin-D’Haultfoeuille:contentReference[oaicite:6]{index=6}:contentReference[oaicite:7]{index=7}  
-│       └─ No  → stick with comparison group choice from step 3
-│
-├─► 5. Are treatment effects plausibly constant across cohorts/time?  
-│       │
-│       ├─ Yes → You *may* report two-way fixed-effects (TWFE)  
-│       │        but first decompose the weights (e.g., `bacondecomp`)  
-│       │        to check for negative or perverse weighting.  
-│       │
-│       └─ No  → Drop TWFE; rely on block-based estimators.  
-│                 (TWFE mixes already-treated controls and can flip signs.):contentReference[oaicite:8]{index=8}
-│
-├─► 6. Covariate imbalance between treated and controls?
-│       │
-│       ├─ No → stay unconditional.  
-│       │
-│       └─ Yes → Impose **Conditional Parallel Trends** and choose:  
-│                • Regression Adjustment (RA)  
-│                • Inverse Probability Weighting (IPW)  
-│                • Doubly-Robust (DR) combo  
-│                (Sant’Anna-Zhao 2020; Callaway-Sant’Anna 2021):contentReference[oaicite:9]{index=9}
-│
-├─► 7. Decide the weighting scheme ω up-front  
-│       (unit-level ATT vs person-level ATT; weights shape the estimand):contentReference[oaicite:10]{index=10}:contentReference[oaicite:11]{index=11}
-│
-├─► 8. Inference & robustness  
-│       • Cluster appropriately; discuss what’s random (Guide Step 4):contentReference[oaicite:12]{index=12}:contentReference[oaicite:13]{index=13}  
-│       • Plot pre-trends for every comparison block.  
-│       • Run sensitivity/bounds if pre-trends look shaky (Rambachan-Roth etc.).
-│
-└─► 9. If any assumption above fails → abandon DiD or redesign.  
-        (Forward-engineer, don’t reverse-engineer.):contentReference[oaicite:14]{index=14}:contentReference[oaicite:15]{index=15}
-END
+# Panel routing and DiD design decisions
+
+This page describes the routing implemented by `create_panel_graph` in version 0.1.2. The graph chooses among available branches from observed data structure. It does not establish the causal assumptions needed to interpret an estimate.
+
+Start with the [input contract](data-requirements.md), then choose the panel or cross-sectional builder explicitly. The public builders do not share an automatic top-level data-type selector.
+
+## Implemented panel routing
+
+```mermaid
+flowchart TD
+    A[Basic and panel cleaning] --> B{Exactly one ever-treated unit?}
+    B -->|Yes| C[Synthetic DiD and Hainmueller synthetic control]
+    B -->|No| D{At least two distinct post-treatment relative periods?}
+    D -->|No| E[Standard DiD]
+    D -->|Yes| F{Different first-treatment periods?}
+    F -->|No| G[Common-timing event study]
+    F -->|Yes| H[Staggered event study]
+    H --> I{At least 10% of units never treated?}
+    I -->|Yes| J[Callaway–Sant'Anna: never-treated controls]
+    I -->|No| K[Callaway–Sant'Anna: not-yet-treated controls]
+```
+
+The staggered path fits a panel event-study model and one Callaway–Sant'Anna comparison-group variant. The single-treated-unit path fits both synthetic methods and includes Hainmueller placebo diagnostics. Balance summaries are attached to specifications; balance results do not automatically select a weighted estimator.
+
+The post-period decision counts distinct nonnegative relative periods in the cleaned panel, including treatment onset as period zero. It is a routing rule, not a check that every treated unit has the same follow-up support. The never-treated decision uses the fraction of distinct units, with a default threshold of 10%; it is not a test of whether those units form a credible comparison group.
+
+Implementation: [core routing](../pyautocausal/pipelines/example_graph/core.py), [branch construction](../pyautocausal/pipelines/example_graph/branches.py), and [decision conditions](../pyautocausal/pipelines/library/conditions.py).
+
+## Decisions the analyst must make
+
+Before interpreting any branch, define the target population, treatment contrast and time window. Choose comparison units based on the research design, and assess parallel trends, anticipation, spillovers, selection and covariate support as appropriate. A branch selected by data shape does not validate these assumptions.
+
+For staggered adoption, inspect cohort/time support and decide whether never-treated or not-yet-treated comparisons answer the intended question. The default 10% routing threshold cannot make that choice on substantive grounds. The [method guide](causal-methods.md) describes the available specifications and estimator APIs for an explicit choice of method and controls.
+
+Treat the staggered panel regression and Callaway–Sant'Anna outputs as different estimators. Do not assume their coefficients have the same aggregation or interpretation simply because both appear in one report. Review effect definitions and inference metadata before comparing them.
+
+Cleaning can change comparison support. The provided cleaners revalidate the remaining design and record dropped observations. Review that audit before fitting or interpreting results; see [missing-data handling](data-requirements.md).
+
+## Scope and limits
+
+The shipped graph does not implement automatic power analysis, missingness-mechanism identification, sensitivity bounds, weight decompositions or an omnibus test of causal identification. It does not automatically select Sun–Abraham, imputation DiD, stacked DiD or local-projection estimators. The earlier conceptual flow on this page listed those options; they were not implemented graph branches.
+
+For uncertainty, use the scope documented in [statistical validation](causal-methods.md#validation-scope). A successful run records completed/skipped nodes, estimator settings and available inference information; it does not certify a study's design. Review the [0.1.2 correction notes](../CHANGELOG.md) before reusing earlier analyses.

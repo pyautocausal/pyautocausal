@@ -1,52 +1,175 @@
 # Building pipelines
 
-`ExecutableGraph` executes named nodes and passes predecessor results to callables. Configure output handling separately from graph structure.
+`ExecutableGraph` is a directed graph of named input, action and decision nodes. `fit()` sets external inputs and executes the selected path. For the provided causal pipelines, start with [getting started](getting-started.md); this guide covers custom graphs and exports.
+
+## Actions and argument binding
+
+Use an explicit mapping from **function parameter** to **predecessor node name** when their names differ:
 
 ```python
 from pyautocausal import ExecutableGraph
 
+
 def square(number: int) -> int:
+    """Square the supplied integer."""
     return number ** 2
 
-graph = (ExecutableGraph()
-         .create_input_node('number', input_dtype=int)
-         .create_node('square', square, predecessors=['number']))
-graph.fit(number=3)
-assert graph.get('square').get_result_value() == 9
+
+graph = (
+    ExecutableGraph()
+    .create_input_node("input_number", input_dtype=int)
+    .create_node("squared", square, predecessors={"number": "input_number"})
+)
+graph.fit(input_number=3)
+assert graph.get("squared").get_result_value() == 9
 ```
 
-Use named functions and return annotations for inspectable, portable notebook exports. `save_node=True` requires a supported return annotation or an explicit `OutputConfig`. Scalar/list JSON outputs and selected matplotlib figures are supported.
+Create predecessors before their successors. `fit()` requires exactly the names of external input nodes; connected inputs in a merged graph are supplied internally. Input values are checked against `input_dtype`.
 
-## Conditional paths
+A list such as `predecessors=["number"]` forwards output names. There is also a shorthand that forwards a lone unbound value to a callable's single required parameter. Explicit mappings are clearer for composition and take precedence over that shorthand. An unknown mapped parameter raises an error unless the callable accepts `**kwargs`.
 
-Every direct successor of a decision node must be classified with `when_true` or `when_false`. Conditions are evaluated once per execution. Skipped paths do not supply argument values. Joins can execute when their required active values are available.
+Values from `RunContext(metadata={...})`, passed to `configure_runtime(run_context=...)`, fill parameters not supplied by predecessors. Function defaults apply after that. An explicitly supplied `None` is a value; it does not trigger a context/default fallback.
 
-Use explicit argument mappings for alternative predecessors:
+Use named functions with inspectable source for notebook exports. A `node_description` overrides the function's docstring in descriptions; otherwise the docstring is used.
+
+## Decisions and alternative predecessors
+
+Register every direct successor of a decision using `when_true` or `when_false`. A decision evaluates its condition once per run, forwards its input values to the selected path, and marks the other path as skipped (`passed` in diagnostics). Its forwarded value is not the boolean condition result.
 
 ```python
-graph.create_node('summary', summarize, predecessors={'result': ['left_result', 'right_result']})
+from pyautocausal import ExecutableGraph
+
+
+def is_positive(number: int) -> bool:
+    return number > 0
+
+
+def double(number: int) -> int:
+    return 2 * number
+
+
+def negate(number: int) -> int:
+    return -number
+
+
+def add_one(value: int) -> int:
+    return value + 1
+
+
+branches = ExecutableGraph().create_input_node("number", int)
+branches.create_decision_node("positive", is_positive, predecessors=["number"])
+branches.create_node("left", double, predecessors=["positive"])
+branches.create_node("right", negate, predecessors=["positive"])
+branches.when_true("positive", "left").when_false("positive", "right")
+branches.create_node(
+    "answer", add_one, predecessors={"value": ["left", "right"]}
+)
+branches.fit(number=4)
+assert branches.get("answer").get_result_value() == 9
+assert branches.get("right").is_passed()
+
+branches.reset().fit(number=-4)
+assert branches.get("answer").get_result_value() == 5
 ```
 
-Exactly one active alternative must provide `result`; ambiguous providers are rejected. Defaults apply only where the callable and graph explicitly allow them. Avoid relying on node insertion order.
+The list inside the mapping declares alternative providers for one parameter. Arrange branches so exactly one provides the value. Two completed providers raise an ambiguity error, even if their values are equal; skipped providers supply nothing. Joins wait for completed or skipped predecessors. Readiness is recomputed after each execution, including when a skip makes a join ready. A missing required argument raises an error if no predecessor or run-context value can supply it.
 
-Explicit predecessor mappings take precedence over implicit single-argument forwarding. A mapped optional argument cannot also replace a required value supplied by the run context. Misspelled mapped argument names are rejected when binding the node's inputs.
+## Composition and repeated runs
 
-## Composition and lifecycle
+`merge_with` mutates the left graph and returns it; the right graph remains independent. Wire a left-hand node to a right-hand **input** node with `>>`. Both graphs must have all nodes in `PENDING` state, so merge before execution or call `reset()` first.
 
-`left.merge_with(right, left.get('result') >> right.get('input'))` connects a result to an input node. The merge preserves decision memberships and maps renamed nodes. Merging must not alter the right-hand graph’s behavior.
+The following continues the `square` and `add_one` definitions above:
 
-A graph instance retains its execution state. Call `reset()` deliberately before fitting it again. Incomplete graphs and failed nodes must be inspected rather than treated as valid completed analyses. Execution diagnostics include skipped and failed nodes and available provenance.
+```python
+left = (
+    ExecutableGraph()
+    .create_input_node("number", int)
+    .create_node("squared", square, predecessors=["number"])
+)
+right = (
+    ExecutableGraph()
+    .create_input_node("value", int)
+    .create_node("answer", add_one, predecessors=["value"])
+)
+left.merge_with(right, left.get("squared") >> right.get("value"))
+left.fit(number=3)
+assert left.get("answer").get_result_value() == 10
+```
 
-## Exports
+Name collisions in the copied graph receive suffixes such as `_1`. Branch registrations and argument bindings follow the renamed nodes. Unwired right-hand inputs remain external inputs in the combined graph. Configure the combined graph's output handler and run context on the left graph.
 
-The notebook exporter records execution diagnostics and relevant run-context values. Exported estimates must match the executed graph. Failed-node information is diagnostic: it must not suggest an unfinished run succeeded. Notebook execution uses a temporary kernel pointing to the current interpreter by default.
+Completed nodes do not automatically rerun on another `fit()`. Call `reset()` before a new analysis: it clears node results, inputs, errors, counts and decisions while retaining graph structure and runtime configuration. It cannot run while a node is running.
 
-Replay preserves supported Python containers, NumPy arrays/scalars, and date/time values. Unsupported objects actually consumed from the run context cause an explicit export error; unused context values are omitted. A single `data_path` loader is supported only for a graph with one external input. Graphs with multiple external inputs must load their inputs separately in the notebook; passing one shared data path is rejected before the notebook is written.
+`to_yaml(path)` and `ExecutableGraph.from_yaml(path)` round-trip the graph definition, including branch registrations, bindings and descriptions. They do not store fitted results or runtime configuration. Configure output handling and run context on a restored graph before execution. Importable function definitions and their dependencies must remain available.
 
-`export_outputs` writes `execution_report.json` with a separate `export` status and stage. Data, visualization, notebook, or HTML failures are recorded and raised to the caller. A completed estimation graph does not imply a successful report export; check this status when inspecting an output directory after a failed export.
+## Saving values and diagnosing failures
 
-When called with `df=`, the helper saves an inspectable CSV and a checked Parquet snapshot (`data.csv.parquet` by default). Notebook replay uses the snapshot to retain leading-zero identifiers, categorical columns, timestamps and the index. Keep that snapshot alongside the notebook. With `data_path=`, the CSV loader must reproduce the executed DataFrame; a detected mismatch raises an error with instructions to use `df=` or an explicit typed loader.
+Configure a destination and opt individual nodes into saving:
 
-Install `pyautocausal[notebooks]` for execution and HTML output. Source-level graph and notebook examples are tested independently of the installed-wheel checks described in [contributing](../CONTRIBUTING.md).
+```python
+from pathlib import Path
+from pyautocausal import ExecutableGraph, OutputConfig, OutputType
 
-For a concise notebook and HTML view, pass `compact=True` to `export_outputs`, `NotebookExporter.export_notebook`, or `export_and_run_to_html`. Implementation cells retain their code in the notebook and execute normally. Their input is hidden in HTML; results, execution calls, provenance and diagnostics remain visible. Explicit `node_description` values are preserved; otherwise the callable’s docstring supplies a default description.
+saved = ExecutableGraph().configure_runtime(output_path=Path("graph-output"))
+saved.create_input_node("number", int)
+saved.create_node(
+    "squared", square, predecessors=["number"], save_node=True,
+    output_config=OutputConfig(output_type=OutputType.JSON, output_filename="square"),
+)
+saved.fit(number=3)  # Writes square.json containing 9 and execution_report.json.
+```
+
+If `output_config` is omitted, `save_node=True` requires a supported return annotation to infer the output format. JSON supports scalars and lists as well as dictionaries; non-finite saved values are rejected. For plots, return the `matplotlib.figure.Figure` you intend to save and select `OutputType.PNG`; the handler saves that figure. Input nodes are not saved as node outputs.
+
+`graph.execution_report()` includes every node's state, execution count and recorded error, plus available analysis settings, sample/cleaning information and package versions. With a configured output handler it is also written as `execution_report.json`. Skipped nodes have state `passed`; they are expected in conditional graphs.
+
+Execution errors propagate. A cycle, stalled graph or previously failed node raises `IncompleteExecutionError` with relevant diagnostics. Node failures record the underlying error; output-saving failures are marked with phase `saving_output`. Correct the cause and call `reset()` before retrying. `is_execution_finished()` only checks that every node is terminal, so a failed node can still make it return `True`; inspect failures or rely on a successful `fit()` return when determining success.
+
+## Exporting a reproducible notebook and HTML report
+
+Install the [notebook extra](../README.md#installation). Save this example as a Python file and run it so the exporter's source inspection can read `mean_outcome`:
+
+```python
+from pathlib import Path
+import pandas as pd
+from pyautocausal import ExecutableGraph, export_outputs
+
+
+def mean_outcome(data: pd.DataFrame) -> float:
+    """Compute the mean outcome in the input table."""
+    return float(data["y"].mean())
+
+
+data = pd.DataFrame({"id_unit": ["001", "01", "1"], "y": [1.0, 2.0, 3.0]})
+output = Path("report-output")
+report_graph = ExecutableGraph().configure_runtime(output_path=output)
+report_graph.create_input_node("df", pd.DataFrame)
+report_graph.create_node(
+    "mean", mean_outcome, predecessors={"data": "df"}, display_function=print
+)
+report_graph.fit(df=data)
+export_outputs(report_graph, df=data, output_path=output, compact=True)
+```
+
+`display_function=print` makes the returned scalar visible in the notebook and HTML. Without a display function, an action's return value is assigned for downstream use but is not automatically displayed.
+
+The helper writes:
+
+| File | Purpose |
+| --- | --- |
+| `data.csv` | Inspectable copy of the supplied DataFrame. |
+| `data.csv.parquet` | Checked snapshot used for replay, retaining identifiers, dtypes and index. |
+| `text/pipeline_visualization.md` | Graph structure and execution states. |
+| `pipeline_execution.ipynb` | Notebook of the completed analysis path. |
+| `pipeline_execution.html` | Results from executing that notebook. |
+| `execution_report.json` | Original execution diagnostics plus export status. |
+
+Pass the same DataFrame used for fitting and keep the Parquet snapshot beside the notebook. `df=` and `data_path=` are mutually exclusive. The `data_path=` convenience route loads CSV and rejects a detected mismatch with the executed DataFrame. Use `df=` or `NotebookExporter` with an explicit typed loader when CSV inference changes values or dtypes.
+
+Exports replay completed nodes and record failed/skipped nodes as diagnostics. They do not rerun decision selection: changed inputs may require fitting the original graph again. Runtime settings actually consumed by completed nodes are replayed for supported Python containers, NumPy scalars/arrays and date/time values. Unsupported consumed objects produce an explicit export error; unused settings are omitted from executable cells.
+
+`NotebookExporter.export_notebook()` writes without executing. `export_and_run_to_html()` also executes, using a temporary Jupyter kernel for the current Python interpreter unless `kernel_name` is supplied. A shared `data_path`/loader cannot replay multiple external inputs; export without it and fill each input cell separately.
+
+With `compact=True`, implementation code remains executable in the notebook and is hidden in HTML. Results, execution calls and diagnostics stay visible. Package helpers and dependencies may still be imported: exported notebooks are not package-free standalone programs. See [wrapper functions](wrapper_functions.md) for argument adapters.
+
+A report failure is separate from an estimation failure. `export_outputs` records `export.state` (`running`, `failed` or `completed`) and `export.stage` (`data`, `visualization`, `notebook` or `html`). Errors propagate; a completed graph alone does not mean the report finished exporting.
