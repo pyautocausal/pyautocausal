@@ -68,8 +68,20 @@ def mboot(inf_func, DIDparams, pl=False, cores=1, rng=None):
         bres = bres.transpose()
 
     # Non-degenerate dimensions
-    ndg_dim = np.logical_and(~np.isnan(np.sum(bres, axis=0)), np.sum(bres ** 2, axis=0) > np.sqrt(np.finfo(float).eps) * 10)
+    ndg_dim = np.logical_and(np.isfinite(bres).all(axis=0), np.sum(bres ** 2, axis=0) > np.sqrt(np.finfo(float).eps) * 10)
     bres = bres[:, ndg_dim]
+
+    # As in the R did::mboot convention, degenerate dimensions have missing
+    # standard errors. A zero empirical influence function does not support a
+    # studentized confidence band; retain the ATT without claiming certainty.
+    # https://github.com/bcallaway11/did/blob/master/R/mboot.R
+    if not ndg_dim.any():
+        return {'bres': bres, 'V': np.empty((0, 0)),
+                'se': np.full(ndg_dim.shape, np.nan), 'crit_val': np.nan,
+                'inference': {
+                    'status': 'unavailable',
+                    'reason': 'All multiplier-bootstrap dimensions are degenerate or non-finite; confidence intervals are unavailable.',
+                }}
 
     # Bootstrap variance matrix (this matrix can be defective because of degenerate cases)
     V = np.cov(bres, rowvar=False)
@@ -82,15 +94,24 @@ def mboot(inf_func, DIDparams, pl=False, cores=1, rng=None):
     bSigma = (quantile_75 - quantile_25) / (qnorm_75 - qnorm_25)
         
     # Critical value for uniform confidence band
-    bT = np.max(np.abs(bres / bSigma), axis=1)
+    positive_scale = np.isfinite(bSigma) & (bSigma > 0)
+    bT = (np.max(np.abs(bres[:, positive_scale] / bSigma[positive_scale]), axis=1)
+          if positive_scale.any() else np.empty(0))
     bT = bT[np.isfinite(bT)]
-    crit_val = np.quantile(bT, 1 - alp, method="inverted_cdf")
+    crit_val = (np.quantile(bT, 1 - alp, method="inverted_cdf")
+                if bT.size else np.nan)
     
     # Standard error
     se = np.full(ndg_dim.shape, np.nan)
-    se[ndg_dim] = bSigma / np.sqrt(n_clusters)
+    se[ndg_dim] = np.where(positive_scale, bSigma / np.sqrt(n_clusters), np.nan)
 
-    return {'bres': bres, 'V': V, 'se': se, 'crit_val': crit_val}
+    available = np.isfinite(se)
+    inference = {'status': ('asymptotic' if available.all() else
+                            'partial' if available.any() else 'unavailable')}
+    if not available.all():
+        inference['reason'] = 'Degenerate or non-finite multiplier-bootstrap dimensions have unavailable confidence intervals.'
+    return {'bres': bres, 'V': V, 'se': se, 'crit_val': crit_val,
+            'inference': inference}
 
 def run_multiplier_bootstrap(inf_func, biters, pl=False, cores=1, rng=None):
     rng = np.random.default_rng(rng)
@@ -113,5 +134,4 @@ def run_multiplier_bootstrap(inf_func, biters, pl=False, cores=1, rng=None):
         results = multiplier_bootstrap(inf_func, biters, rng=rng)
 
     return results
-
 

@@ -7,6 +7,10 @@ import pandas as pd
 
 
 def _safe(value):
+    if isinstance(value, np.ndarray) and value.ndim == 0:
+        # Scalar arrays cannot be iterated; normalize their contained value
+        # through the same non-finite policy as ordinary diagnostic scalars.
+        return _safe(value.item())
     if isinstance(value, np.generic):
         value = value.item()
     if isinstance(value, float) and not math.isfinite(value):
@@ -44,7 +48,8 @@ def graph_execution_report(graph):
     fields = ('formula', 'outcome_col', 'treatment_cols', 'control_cols', 'time_col',
               'unit_col', 'N0', 'T0', 'reference_period', 'model_type', 'ate_estimate',
               'ate_ci', 'experimental', 'inference', 'treatment_mapping', 'random_state', 'seed',
-              'balance_diagnostics', 'hainmueller_placebo_metadata')
+              'balance_diagnostics', 'hainmueller_placebo_metadata',
+              'treatment_time_col', 'relative_time_col', 'event_time_map')
     for node in graph.nodes:
         details = {'state': node.state.value, 'execution_count': node.execution_count}
         if getattr(node, 'error', None):
@@ -75,9 +80,23 @@ def graph_execution_report(graph):
                         analysis[key] = _safe(model[key])
                 overall = getattr(model.get('overall_effect'), 'atte', None)
                 if isinstance(overall, dict):
-                    analysis['overall_effect'] = {
-                        key: _safe(overall[key]) for key in ('overall_att', 'overall_se') if key in overall
-                    }
+                    analysis['overall_effect'] = {}
+                    for key in ('overall_att', 'overall_se', 'inference'):
+                        if key in overall:
+                            statistic = overall[key]
+                            if key != 'inference' and np.asarray(statistic).size == 1:
+                                statistic = np.asarray(statistic).item()
+                            analysis['overall_effect'][key] = _safe(statistic)
+                inference = {}
+                att_gt = model.get('att_gt_object')
+                if getattr(att_gt, 'inference', None) is not None:
+                    inference['group_time_effects'] = _safe(att_gt.inference)
+                for key in ('overall_effect', 'dynamic_effects', 'group_effects'):
+                    aggregation = getattr(model.get(key), 'atte', None)
+                    if isinstance(aggregation, dict) and 'inference' in aggregation:
+                        inference[key] = _safe(aggregation['inference'])
+                if inference:
+                    analysis['inference'] = inference
                 seeds = {name: _safe(getattr(fitted, 'random_state'))
                          for name, fitted in model.items() if hasattr(fitted, 'random_state')}
                 if seeds:

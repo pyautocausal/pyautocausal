@@ -53,6 +53,9 @@ class ATTgt:
       ref_se = mboot(inffunc.T, dp, rng=self._rng)
       crit_val, se = ref_se['crit_val'], ref_se['se']
       V = ref_se['V']
+      self.inference = ref_se['inference']
+    else:
+      self.inference = {'status': 'asymptotic', 'method': 'analytical influence function'}
     
     ############# aggte input
     group = result['group']
@@ -183,6 +186,7 @@ class ATTgt:
 
     legend_1 = False    # for multiple subplots, legend outside 
     fig, axes = plt.subplots(nrows=len(group), ncols=1, figsize=(10, 5))  # Adjust the figsize as needed
+    axes = np.atleast_1d(axes)
     handles = []
     labels = []
     for i, group_cat in enumerate(group):

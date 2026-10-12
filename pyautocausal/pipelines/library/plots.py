@@ -202,91 +202,30 @@ def uplift_curve_plot(spec: UpliftSpec, **kwargs) -> plt.Figure:
 
 
 def _extract_event_study_results(spec: Union[EventStudySpec, StaggeredDiDSpec], params: pd.Series, conf_int: pd.DataFrame) -> pd.DataFrame:
-    """Extract event study results from EventStudySpec or StaggeredDiDSpec."""
-    periods = []
-    coeffs = []
-    lower_ci = []
-    upper_ci = []
-    
-    event_pattern_pre = re.compile(r'event_pre(\d+)')   # For negative periods: event_pre1 = -1
-    event_pattern_post = re.compile(r'event_post(\d+)') # For positive periods: event_post1 = +1
-    
-    # Determine which parameters to check
-    if isinstance(spec, EventStudySpec):
-        # For EventStudySpec, use the specific event columns
-        param_names = sorted(spec.event_cols)
-    else:
-        # For StaggeredDiDSpec, check all parameters
-        param_names = sorted(params.index)
-    
-    # Process parameters to find event study coefficients
-    for param_name in param_names:
-        if param_name not in params.index:
-            continue
-            
-        # Check for pre-treatment period (pre prefix)
-        match_pre = event_pattern_pre.match(param_name)
-        if match_pre:
-            period = -int(match_pre.group(1))  # Convert to negative number
-            periods.append(period)
-            coeffs.append(params[param_name])
-            lower_ci.append(conf_int.loc[param_name, 'lower'])
-            upper_ci.append(conf_int.loc[param_name, 'upper'])
-            continue
-            
-        # Check for post-treatment period (post prefix)
-        match_post = event_pattern_post.match(param_name)
-        if match_post:
-            period = int(match_post.group(1))  # Already positive
-            periods.append(period)
-            coeffs.append(params[param_name])
-            lower_ci.append(conf_int.loc[param_name, 'lower'])
-            upper_ci.append(conf_int.loc[param_name, 'upper'])
-            continue
-        
-        # Check for event_period0 (t=0)
-        if param_name == 'event_period0':
-            periods.append(0)
-            coeffs.append(params[param_name])
-            lower_ci.append(conf_int.loc[param_name, 'lower'])
-            upper_ci.append(conf_int.loc[param_name, 'upper'])
-    
-    # Handle reference period
-    if isinstance(spec, EventStudySpec):
-        # For EventStudySpec, use the specified reference period
-        if hasattr(spec, 'reference_period') and spec.reference_period not in periods:
-            periods.append(spec.reference_period)
-            coeffs.append(0)
-            lower_ci.append(0)
-            upper_ci.append(0)
-        elif not hasattr(spec, 'reference_period') and -1 not in periods:
-            # Default to -1 as reference period if not specified
-            periods.append(-1)
-            coeffs.append(0)
-            lower_ci.append(0)
-            upper_ci.append(0)
-    else:
-        # For StaggeredDiDSpec and other specs, add a reference period
-        # Use -1 as reference period if we have pre-treatment periods, otherwise use 0
-        if any(p < 0 for p in periods) and -1 not in periods:
-            # If we have pre-treatment periods, use -1 as reference
-            periods.append(-1)
-            coeffs.append(0.0)
-            lower_ci.append(0.0)
-            upper_ci.append(0.0)
-        elif 0 not in periods:
-            # Otherwise use 0 as reference
-            periods.append(0)
-            coeffs.append(0.0)
-            lower_ci.append(0.0)
-            upper_ci.append(0.0)
-    
-    return pd.DataFrame({
-        'period': periods,
-        'coef': coeffs,
-        'lower': lower_ci,
-        'upper': upper_ci
-    })
+    """Extract only generated event coefficients, including collision-safe names."""
+    event_time_map = getattr(spec, 'event_time_map', {})
+    if not event_time_map:
+        # Compatibility for manually constructed specifications from earlier versions.
+        names = spec.event_cols if isinstance(spec, EventStudySpec) else params.index
+        event_time_map = {}
+        for name in names:
+            if name in spec.control_cols:
+                continue
+            match = re.fullmatch(r'event_(pre|post)(\d+)', name)
+            if match:
+                period = int(match.group(2))
+                event_time_map[name] = -period if match.group(1) == 'pre' else period
+            elif name == 'event_period0':
+                event_time_map[name] = 0
+    rows = [
+        {'period': period, 'coef': params[name],
+         'lower': conf_int.loc[name, 'lower'], 'upper': conf_int.loc[name, 'upper']}
+        for name, period in event_time_map.items() if name in params.index
+    ]
+    reference = getattr(spec, 'reference_period', -1)
+    if reference not in [row['period'] for row in rows]:
+        rows.append({'period': reference, 'coef': 0., 'lower': 0., 'upper': 0.})
+    return pd.DataFrame(rows, columns=['period', 'coef', 'lower', 'upper'])
 
 
 @make_transformable
@@ -335,9 +274,11 @@ def event_study_plot(spec: Union[StaggeredDiDSpec, EventStudySpec],
     # Create figure
     fig, ax = plt.subplots(figsize=figsize)
     
-    # Separate reference period from other periods for plotting
-    ref_periods = results_df[results_df['coef'] == 0]
-    non_ref_periods = results_df[results_df['coef'] != 0]
+    # A fitted zero effect still has sampling uncertainty. Only the omitted
+    # reference period is normalized to zero without an estimated interval.
+    is_reference = results_df['period'] == getattr(spec, 'reference_period', -1)
+    ref_periods = results_df[is_reference]
+    non_ref_periods = results_df[~is_reference]
     
     # Plot non-reference coefficients with markers only (no connecting lines)
     ax.plot(non_ref_periods['period'], non_ref_periods['coef'], 
@@ -363,6 +304,7 @@ def event_study_plot(spec: Union[StaggeredDiDSpec, EventStudySpec],
             marker=marker,  # Same marker as other coefficients
             color=effect_color,  # Same color as other coefficients
             linestyle='none',
+            label='Reference period',
             markersize=8)  # Same size as other coefficients
     
     # Add zero reference line
@@ -625,21 +567,28 @@ def callaway_santanna_comprehensive_results(spec: StaggeredDiDSpec) -> str:
     # Overall ATT - simplified and safer
     if overall_effect is not None:
         try:
-            overall_att = float(overall_effect.atte['overall_att'])
-            overall_se = float(overall_effect.atte['overall_se'])
+            overall_att = float(np.asarray(overall_effect.atte['overall_att']).item())
+            raw_se = overall_effect.atte.get('overall_se')
+            overall_se = (float(np.asarray(raw_se).item())
+                          if raw_se is not None else np.nan)
+            inference = overall_effect.atte.get('inference', {})
             
             buffer.write("OVERALL TREATMENT EFFECT:\n")
             buffer.write("-" * 30 + "\n")
             buffer.write(f"ATT:        {overall_att:>8.4f}\n")
-            buffer.write(f"Std Error:  {overall_se:>8.4f}\n")
-            
-            # Calculate confidence intervals
-            ci_lower = overall_att - 1.96 * overall_se
-            ci_upper = overall_att + 1.96 * overall_se
-            buffer.write(f"95% CI:     [{ci_lower:>7.4f}, {ci_upper:>7.4f}]\n")
+            if np.isfinite(overall_se) and inference.get('status') != 'unavailable':
+                buffer.write(f"Std Error:  {overall_se:>8.4f}\n")
+                ci_lower = overall_att - 1.96 * overall_se
+                ci_upper = overall_att + 1.96 * overall_se
+                buffer.write(f"95% CI:     [{ci_lower:>7.4f}, {ci_upper:>7.4f}]\n")
+            else:
+                buffer.write("Std Error:  unavailable\n")
+                buffer.write("95% CI:     unavailable\n")
+                buffer.write("Inference unavailable: " + inference.get(
+                    'reason', 'The fitted influence functions do not support uncertainty estimation.') + "\n")
             
             # Simple significance test
-            if overall_se > 0:
+            if np.isfinite(overall_se) and overall_se > 0 and inference.get('status') != 'unavailable':
                 t_stat = overall_att / overall_se
                 significance = "***" if abs(t_stat) > 2.58 else "**" if abs(t_stat) > 1.96 else "*" if abs(t_stat) > 1.64 else ""
                 buffer.write(f"Significant: {significance if significance else 'No'}\n")
@@ -651,8 +600,14 @@ def callaway_santanna_comprehensive_results(spec: StaggeredDiDSpec) -> str:
     # Simple summary table - just use the built-in summary
     buffer.write("DETAILED RESULTS:\n")
     buffer.write("-" * 30 + "\n")
+    detail_inference = getattr(att_gt, 'inference', {})
+    if detail_inference.get('status') in {'partial', 'unavailable'}:
+        buffer.write("Group-time inference " + detail_inference['status'] + ": "
+                     + detail_inference.get('reason', 'Some confidence intervals are unavailable.') + "\n")
     try:
         summary_table = att_gt.summary2
+        if summary_table.isna().any().any():
+            summary_table = summary_table.astype(object).where(summary_table.notna(), 'unavailable')
         buffer.write(summary_table.to_string(index=False))
         buffer.write("\n\n")
     except Exception as e:

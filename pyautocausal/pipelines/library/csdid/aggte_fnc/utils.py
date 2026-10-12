@@ -97,6 +97,21 @@ def AGGTEobj(overall_att=None,
     }
     
     
+    # Preserve point estimates when empirical influence functions do not
+    # support inference. Missing uncertainty must never become a zero-width
+    # confidence interval or a significance marker in the printed summary.
+    overall_se = np.atleast_1d(np.asarray(np.nan if overall_se is None else overall_se, dtype=float))
+    out['overall_se'] = overall_se
+    availability = np.isfinite(overall_se).ravel()
+    if se_egt is not None:
+        availability = np.concatenate([availability, np.isfinite(se_egt).ravel()])
+    out['inference'] = {
+        'status': ('asymptotic' if availability.all() else
+                   'partial' if availability.any() else 'unavailable'),
+    }
+    if not availability.all():
+        out['inference']['reason'] = 'Degenerate or non-finite influence functions leave some confidence intervals unavailable.'
+
     # Overall estimates
     alp = out["DIDparams"]["alp"]
     pointwise_cval = stats.norm.ppf(1 - alp / 2)
@@ -118,6 +133,8 @@ def AGGTEobj(overall_att=None,
         print("Overall summary of ATT's based on calendar time aggregation:")
     colnames = ["ATT", "Std. Error", f"[{100 * (1 - out['DIDparams']['alp'])}%"," Conf. Int.]", ""]
     print(pd.DataFrame(out1, columns=colnames).to_string(index=False))
+    if not availability.all():
+        print('Inference unavailable where standard errors are NaN: degenerate or non-finite influence functions.')
     print("\n")
     
     # Handle cases depending on type
@@ -192,5 +209,3 @@ def AGGTEobj(overall_att=None,
         print("\n")
         
     return out
-
-

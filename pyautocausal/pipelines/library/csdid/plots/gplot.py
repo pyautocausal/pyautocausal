@@ -6,9 +6,16 @@ Created on Sun Jun 11 16:17:07 2023
 """
 
 import matplotlib.pyplot as plt
+import numpy as np
 
 # get_ipython().run_line_magic('matplotlib', 'qt') # To aopen separate window
 # get_ipython().run_line_magic('matplotlib', 'inline') # In line graph
+
+
+def _mark_unavailable_intervals(results, ax):
+    if (~np.isfinite(results['c'] * results['att_se'])).any():
+        ax.text(.02, .98, 'Confidence intervals unavailable for some estimates',
+                transform=ax.transAxes, va='top', fontsize='small')
 
 def gplot(ssresults, ax, ylim=None, xlab=None, ylab=None, title="Group", xgap=1,
            legend=True, ref_line=0, theming=True):
@@ -34,6 +41,7 @@ def gplot(ssresults, ax, ylim=None, xlab=None, ylab=None, title="Group", xgap=1,
     ax.set_title(title)
     ax.set_xlabel(xlab)    
     ax.set_ylabel(ylab)    
+    _mark_unavailable_intervals(ssresults, ax)
 
     handles, labels = ax.get_legend_handles_labels()    
     
@@ -82,6 +90,7 @@ def splot(ssresults, ax, ylim=None, xlab=None, ylab=None, title="Group",
     ax.set_xlabel(xlab)
     ax.set_ylabel(ylab)
     ax.set_title(title)
+    _mark_unavailable_intervals(ssresults, ax)
 
     handles, labels = ax.get_legend_handles_labels()    
     

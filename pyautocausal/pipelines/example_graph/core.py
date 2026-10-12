@@ -31,12 +31,14 @@ def create_basic_cleaner(
     """
     _validate_missing_policy(missing_strategy, max_missing_fraction)
     unit_column = "id_unit" if "id_unit" in df.columns else None
-    # Apply the missingness policy before attempting integer treatment casts.
+    # Apply one missingness policy to the input sample before casts. Checking
+    # covariates in a later stage would change their threshold denominator after
+    # dropping missing outcome/treatment rows.
     complete = (
         AutoCleaner(unit_column=unit_column)
         .check_required_columns(required_columns=["treat", "y"])
         .check_binary_treatment(treatment_column="treat", allow_missing=True)
-        .check_for_missing_data(strategy=missing_strategy, check_columns=["treat", "y"],
+        .check_for_missing_data(strategy=missing_strategy,
                                 max_missing_fraction=max_missing_fraction)
         .clean(df)
     )
@@ -44,7 +46,6 @@ def create_basic_cleaner(
         AutoCleaner(unit_column=unit_column)
         .check_column_types(expected_types={"treat": int, "y": float})
         .check_binary_treatment(treatment_column="treat")
-        .infer_and_convert_categoricals(ignore_columns=["treat", "y", "t", "id_unit"])
         .check_causal_design()
         .clean(complete)
     )
@@ -76,7 +77,6 @@ def create_panel_cleaner(
     return (
         AutoCleaner(unit_column="id_unit")
         .standardize_time_periods(treatment_column="treat", time_column="t")
-        .infer_and_convert_categoricals(ignore_columns=["treat", "y", "t", "id_unit"])
         .check_causal_design(unit_column="id_unit", time_column="t")
         .clean(complete)
     )
@@ -91,7 +91,6 @@ def create_cross_sectional_cleaner(
         AutoCleaner(unit_column="id_unit" if "id_unit" in df.columns else None)
         .check_required_columns(required_columns=["treat", "y"])
         .check_for_missing_data(strategy=missing_strategy, max_missing_fraction=max_missing_fraction)
-        .infer_and_convert_categoricals(ignore_columns=["treat", "y", "t", "id_unit"])
         .check_causal_design()
         .clean(df)
     )

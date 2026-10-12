@@ -73,6 +73,17 @@ class Optimize(object):
                 control_outcome, control_covariates,
                 pairwise_difference,
                 pen, placebo, data)
+        if not isinstance(steps, (int, np.integer)) or steps < 1:
+            raise ValueError("Synthetic control optimization requires at least one initialization")
+        if control_outcome.ndim != 2 or control_outcome.shape[1] == 0:
+            raise ValueError("Synthetic control optimization requires at least one donor")
+        if placebo:
+            # Each pseudo-treated unit needs its own optimum. Keeping a prior
+            # unit's weights, or the last (possibly worse) optimizer evaluation,
+            # does not produce a fitted placebo synthetic control.
+            placebo_prefix = placebo.replace('-', '_') + '_placebo'
+            setattr(data, placebo_prefix + '_w', None)
+            setattr(data, placebo_prefix + '_min_loss', np.inf)
         
         for step in range(steps):
 
@@ -108,13 +119,11 @@ class Optimize(object):
                 print("Successful:", res.success)
                 print(res.message)
         
-        #If sampler did not converge, try again up to times before admitting defeat
-        try:
-            res.x
-        except:
-            data.fail_count += 1
-            if data.fail_count <= 1:
-                data.optimize(*args)
+        weight_name = placebo_prefix + '_w' if placebo else 'w'
+        fitted_weights = getattr(data, weight_name, None)
+        if fitted_weights is None or not np.isfinite(fitted_weights).all():
+            context = f" for {placebo} placebo" if placebo else ''
+            raise ValueError("Synthetic control optimization could not find finite feasible donor weights" + context)
             
         if self.method == "DSC":
             self._update_original_data(placebo)
@@ -136,6 +145,8 @@ class Optimize(object):
         '''
 
         assert placebo in [False, "in-time", "in-space"], "TypeError: Placebo must False, 'in-time' or 'in-space'"
+        if not np.isfinite(v_0).all() or (np.asarray(v_0) < 0).any():
+            return float(np.inf)
 
         n_controls = control_outcome.shape[1]
         
@@ -171,8 +182,15 @@ class Optimize(object):
         
         try: #Try solving using current value of V, if it doesn't work return infinite loss
             result = problem.solve(verbose=False)
-            loss = (treated_outcome - control_outcome @ w.value).T @ (treated_outcome - control_outcome @ w.value)
-        except:
+            if (w.value is None or not np.isfinite(w.value).all()
+                    or not np.isclose(w.value.sum(), 1.0, atol=1e-5)
+                    or (w.value < -1e-5).any()):
+                return float(np.inf)
+            residual = treated_outcome - control_outcome @ w.value
+            loss = float((residual.T @ residual).item())
+            if not np.isfinite(loss):
+                return float(np.inf)
+        except Exception:
             return float(np.inf)
        
         #If loss is smaller than previous minimum, update loss, w and v
@@ -180,16 +198,19 @@ class Optimize(object):
             if loss < data.min_loss:
                 data.min_loss = loss
                 data.w = w.value
-                data.v = np.diagonal(V) / np.sum(np.diagonal(V)) #Make sure its normailzed (sometimes the optimizers diverge from bounds)
+                importance = np.diagonal(V)
+                data.v = (importance / importance.sum() if importance.sum() > 0
+                          else np.full(len(importance), np.nan))
                 data.pen = pen_coef
                 data.synth_outcome = data.w.T @ data.control_outcome_all.T #Transpose to make it (n_periods x 1)
                 data.synth_covariates = data.control_covariates @ data.w
 
-        elif placebo == "in-space":
-            data.in_space_placebo_w = w.value
-
-        elif placebo == "in-time":
-            data.in_time_placebo_w = w.value
+        else:
+            placebo_prefix = placebo.replace('-', '_') + '_placebo'
+            minimum_name = placebo_prefix + '_min_loss'
+            if loss < getattr(data, minimum_name, np.inf):
+                setattr(data, minimum_name, loss)
+                setattr(data, placebo_prefix + '_w', w.value.copy())
             
         #Return loss
         return loss

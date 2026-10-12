@@ -958,15 +958,31 @@ def fit_hainmueller_synth_estimator(spec: SynthDIDSpec) -> SynthDIDSpec:
     spec = copy.copy(spec)
     
     # Extract information from spec
-    data = spec.data.copy()
     outcome_col = spec.outcome_col
     time_col = spec.time_col
     unit_col = spec.unit_col
     treatment_col = spec.treatment_cols[0]
+    # The backend treats every remaining column as a predictor. Restrict its
+    # input to the explicitly selected controls so unused numeric columns (or
+    # columns added by another analysis) cannot change this model's adjustment.
+    columns = list(dict.fromkeys([
+        unit_col, time_col, outcome_col, treatment_col, *(spec.control_cols or []),
+    ]))
+    data = spec.data.loc[:, columns].copy()
+    for column in [outcome_col, *(spec.control_cols or [])]:
+        try:
+            data[column] = pd.to_numeric(data[column], errors='raise')
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Synthetic control predictor {column!r} must be numeric") from exc
+        if not np.isfinite(data[column].to_numpy(dtype=float)).all():
+            raise ValueError(f"Synthetic control predictor {column!r} must be finite")
     
     # Convert unit column to string to avoid TypeError in Synth library
     if pd.api.types.is_numeric_dtype(data[unit_col]):
         data[unit_col] = data[unit_col].astype(str)
+    # SyntheticControlMethods reshapes consecutive rows into matrices. Its
+    # donor ordering, outcomes and plotting dates must all use this same grid.
+    data = data.sort_values([unit_col, time_col]).reset_index(drop=True)
 
     # Find the treated unit and treatment period
     treated_units = data[data[treatment_col] == 1][unit_col].unique()
@@ -975,13 +991,11 @@ def fit_hainmueller_synth_estimator(spec: SynthDIDSpec) -> SynthDIDSpec:
 
     treated_unit = treated_units[0]
     
-    treatment_period = int(data[data[treatment_col] == 1][time_col].min())
-    
-    # Prepare control columns to exclude (treatment column and any non-numeric columns)
+    treatment_period = data.loc[data[treatment_col] == 1, time_col].min()
+
+    # Outcomes are intentionally also used as pretreatment predictors by the
+    # backend; only the treatment flag is excluded from the selected columns.
     exclude_columns = [treatment_col]
-    for col in data.columns:
-        if col not in [outcome_col, unit_col, time_col] and not pd.api.types.is_numeric_dtype(data[col]):
-            exclude_columns.append(col)
     
     # Fit Synthetic Control using the SyntheticControlMethods package
     sc = Synth(
