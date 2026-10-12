@@ -38,7 +38,8 @@ def TorF(cond, use_isTRUE=False):
         cond[np.isnan(cond)] = False
     return cond
 
-def multiplier_bootstrap(inf_func, biters): # This function comes from c++
+def multiplier_bootstrap(inf_func, biters, rng=None): # This function comes from c++
+    rng = np.random.default_rng(rng)
     n, K = inf_func.shape
     biters = int(biters)
     innerMat = np.zeros((n, K))
@@ -46,9 +47,8 @@ def multiplier_bootstrap(inf_func, biters): # This function comes from c++
     outMat = np.zeros((biters,K))
 
     for b in range(biters):
-        # draw Rademechar weights
-        # Ub = ( np.ones(n) - 2 * np.round(np.random.rand(n)) )[:, np.newaxis]
-        Ub = np.random.choice([1, -1], size=(n, 1))
+        # Draw Rademacher weights using only this analysis's local generator.
+        Ub = rng.choice([1, -1], size=(n, 1))
         innerMat = inf_func * Ub
         outMat[b] = np.mean(innerMat, axis=0)
 

@@ -202,12 +202,6 @@ def test_merge_with_wrong_graph_nodes():
 
 
 
-def test_merge_preserves_right_hand_graph():
-    """This test does nothing because I can't figure out how to copy a graph
-    TODO: Test this
-    """
-    pass
-    
 def test_merge_with_no_wirings():
     """Test that merging without any wirings fails"""
     graph1 = ExecutableGraph()

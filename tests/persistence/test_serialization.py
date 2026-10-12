@@ -56,3 +56,17 @@ def test_prepare_output_other_types():
     data = "test string"
     result = prepare_output_for_saving(data, OutputType.TEXT)
     assert result == data 
+
+
+def test_jsonify_preserves_numpy_timestamp_precision_and_string_keys():
+    stamp = np.datetime64('2026-10-08T12:34:56.123456789', 'ns')
+    assert jsonify(stamp) == '2026-10-08T12:34:56.123456789'
+    assert jsonify(np.array([stamp])) == ['2026-10-08T12:34:56.123456789']
+    assert jsonify(np.array(stamp)) == '2026-10-08T12:34:56.123456789'
+    assert jsonify({'a:b': 1, 'a:c': 2}) == {'a:b': 1, 'a:c': 2}
+
+
+@pytest.mark.parametrize('value', [{1: 'number', '1': 'string'}, {None: 1, 'null': 2}])
+def test_jsonify_rejects_dictionary_key_collisions(value):
+    with pytest.raises(ValueError, match='collide'):
+        jsonify(value)

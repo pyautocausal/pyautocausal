@@ -191,7 +191,9 @@ class CleaningPlan:
                     details={"error": str(e), "hint": hint}
                 )
                 self._metadata.add_transformation(error_record)
-                # Continue with other operations
+                self._metadata.end_shape = cleaned_df.shape
+                self._metadata.duration_seconds = time() - start_time
+                raise RuntimeError(f"Cleaning operation '{operation.name}' failed: {e}") from e
         
         self._metadata.end_shape = cleaned_df.shape
         self._metadata.duration_seconds = time() - start_time

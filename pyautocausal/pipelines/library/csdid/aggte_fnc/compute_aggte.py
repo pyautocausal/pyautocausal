@@ -19,7 +19,9 @@ def compute_aggte(MP,
                       cband         = None,
                       alp           = None,
                       clustervars   = None,
-                      call          = None):
+                      call          = None,
+                      rng           = None):
+    rng = np.random.default_rng(rng)
     
 
   
@@ -177,7 +179,7 @@ def compute_aggte(MP,
                                      wif = simple_wif )[:, None]
     
         # Get standard errors from the overall influence function
-        simple_se = get_se(simple_if, dp)
+        simple_se = get_se(simple_if, dp, rng=rng)
         
         if simple_se is not None:
             if simple_se <= np.sqrt(np.finfo(float).eps) * 10:
@@ -213,7 +215,7 @@ def compute_aggte(MP,
                                             whichones = whichg ,
                                             weights_agg = weightsg , 
                                             wif = None)[:, None]
-            se_g = get_se(inf_func_g, dp)
+            se_g = get_se(inf_func_g, dp, rng=rng)
             selective_se_inner[i] = {'inf_func': inf_func_g, 'se': se_g}
             
         # recover standard errors separately by group   
@@ -231,7 +233,7 @@ def compute_aggte(MP,
             if not dp['bstrap']:
                 print("Used bootstrap procedure to compute simultaneous confidence band")
         
-            selective_crit_val = mboot(selective_inf_func_g, dp)['crit_val']
+            selective_crit_val = mboot(selective_inf_func_g, dp, rng=rng)['crit_val']
         
             if np.isnan(selective_crit_val) or np.isinf(selective_crit_val):
                 print("Simultaneous critical value is NA. This probably happened because we cannot compute t-statistic (std errors are NA). We then report pointwise conf. intervals.")
@@ -265,7 +267,7 @@ def compute_aggte(MP,
                                               wif = selective_wif)[:, None]    
         
         # get overall standard error        
-        selective_se = get_se(selective_inf_func, dp)
+        selective_se = get_se(selective_inf_func, dp, rng=rng)
         if not np.isnan(selective_se):
             if selective_se <= np.sqrt(np.finfo(float).eps) * 10:
                 selective_se = None
@@ -333,7 +335,7 @@ def compute_aggte(MP,
                                           whichones   = whiche, 
                                           weights_agg = pge, 
                                           wif         = wif_e)[:, None]
-            se_e = get_se(inf_func_e, dp)
+            se_e = get_se(inf_func_e, dp, rng=rng)
             dynamic_se_inner.append({'inf_func': inf_func_e, 'se': se_e})
 
         dynamic_se_e = np.array([item['se'] for item in dynamic_se_inner]).T
@@ -346,7 +348,7 @@ def compute_aggte(MP,
         if dp['cband']:
             if not dp['bstrap']:
                 print('Used bootstrap procedure to compute simultaneous confidence band')
-            dynamic_crit_val = mboot(dynamic_inf_func_e, dp)['crit_val']
+            dynamic_crit_val = mboot(dynamic_inf_func_e, dp, rng=rng)['crit_val']
         
             if np.isnan(dynamic_crit_val) or np.isinf(dynamic_crit_val):
                 print('Simultaneous critical value is NA. This probably happened because we cannot compute t-statistic (std errors are NA). We then report pointwise conf. intervals.')
@@ -369,7 +371,7 @@ def compute_aggte(MP,
                                             weights_agg = np.repeat(1 / np.sum(epos), np.sum(epos)),
                                             wif=None)[:, None]
         
-        dynamic_se = get_se(dynamic_inf_func, dp)
+        dynamic_se = get_se(dynamic_inf_func, dp, rng=rng)
         if not np.isnan(dynamic_se):
             if dynamic_se <= np.sqrt(np.finfo(float).eps) * 10:
                 dynamic_se = np.nan
@@ -427,7 +429,7 @@ def compute_aggte(MP,
                                             whichones=which_t, 
                                             weights_agg=pgt, 
                                             wif=wif_t)[:, None]
-            se_t = get_se(inf_func_t, dp)
+            se_t = get_se(inf_func_t, dp, rng=rng)
             calendar_se_inner.append({"inf_func": inf_func_t, "se": se_t})
     
     
@@ -448,7 +450,7 @@ def compute_aggte(MP,
                 warnings.warn('Used bootstrap procedure to compute simultaneous confidence band')
         
             # mboot function is not provided, please define it separately
-            calendar_crit_val = mboot(calendar_inf_func_t, dp)['crit_val']
+            calendar_crit_val = mboot(calendar_inf_func_t, dp, rng=rng)['crit_val']
         
             if np.isnan(calendar_crit_val) or np.isinf(calendar_crit_val):
                 warnings.warn('Simultaneous critical value is NA. This probably happened because we cannot compute t-statistic (std errors are NA). We then report pointwise conf. intervals.')
@@ -477,7 +479,7 @@ def compute_aggte(MP,
         calendar_inf_func = np.array(calendar_inf_func)
         
         # get overall standard error
-        calendar_se = get_se(calendar_inf_func, dp)
+        calendar_se = get_se(calendar_inf_func, dp, rng=rng)
         if not np.isnan(calendar_se):
             if calendar_se <= np.sqrt(np.finfo(float).eps) * 10:
                 calendar_se = np.nan

@@ -37,19 +37,30 @@ The pipeline is organized into separate modules:
 
 from pathlib import Path
 from pyautocausal.orchestration.graph import ExecutableGraph
+from pyautocausal.orchestration.run_context import RunContext
 # All branch imports are now done locally within each function as needed
 from .core import (
     _create_shared_head,
+    _validate_missing_policy,
     create_panel_decision_structure,
     configure_panel_decision_paths,
     create_cross_sectional_decision_structure,
 )
 
 
-def create_panel_graph(output_dir: Path) -> ExecutableGraph:
-    """Create the panel data causal inference graph."""
+def create_panel_graph(output_dir: Path, *, missing_strategy: str = "drop_rows",
+                       max_missing_fraction: float = 0.1) -> ExecutableGraph:
+    """Create the panel graph with an explicit missing-data policy.
+
+    ``drop_rows`` permits missingness up to ``max_missing_fraction`` per column
+    (default 10%); ``reject`` refuses all missingness. Cleaning records drops in
+    DataFrame.attrs['cleaning_metadata'] and revalidates the remaining design.
+    """
+    _validate_missing_policy(missing_strategy, max_missing_fraction)
     graph = ExecutableGraph()
-    graph.configure_runtime(output_path=output_dir)
+    graph.configure_runtime(output_path=output_dir, run_context=RunContext(metadata={
+        "missing_strategy": missing_strategy, "max_missing_fraction": max_missing_fraction,
+    }))
     
     # 1. Shared Head
     _create_shared_head(graph)
@@ -78,10 +89,19 @@ def create_panel_graph(output_dir: Path) -> ExecutableGraph:
     return graph
 
 
-def create_cross_sectional_graph(output_dir: Path) -> ExecutableGraph:
-    """Create the cross-sectional data causal inference graph."""
+def create_cross_sectional_graph(output_dir: Path, *, missing_strategy: str = "drop_rows",
+                                 max_missing_fraction: float = 0.1) -> ExecutableGraph:
+    """Create the cross-sectional graph with an explicit missing-data policy.
+
+    ``drop_rows`` permits missingness up to ``max_missing_fraction`` per column
+    (default 10%); ``reject`` refuses all missingness. Both treatment groups must
+    remain after cleaning. Unit IDs are optional and may be strings.
+    """
+    _validate_missing_policy(missing_strategy, max_missing_fraction)
     graph = ExecutableGraph()
-    graph.configure_runtime(output_path=output_dir)
+    graph.configure_runtime(output_path=output_dir, run_context=RunContext(metadata={
+        "missing_strategy": missing_strategy, "max_missing_fraction": max_missing_fraction,
+    }))
     # 1. Shared Head
     _create_shared_head(graph)
     
@@ -96,7 +116,7 @@ def create_cross_sectional_graph(output_dir: Path) -> ExecutableGraph:
     return graph
 
 
-def simple_graph() -> ExecutableGraph:
+def simple_graph(*, missing_strategy: str = "drop_rows", max_missing_fraction: float = 0.1) -> ExecutableGraph:
     """Create a simple graph for testing purposes.
     
     This creates a basic pipeline with cross-sectional branch only
@@ -108,8 +128,12 @@ def simple_graph() -> ExecutableGraph:
         Configured ExecutableGraph ready for execution
     """
     
+    _validate_missing_policy(missing_strategy, max_missing_fraction)
     graph = ExecutableGraph()
-    
+    graph.configure_runtime(run_context=RunContext(metadata={
+        "missing_strategy": missing_strategy, "max_missing_fraction": max_missing_fraction,
+    }))
+
     # Create the shared head nodes
     _create_shared_head(graph)
     

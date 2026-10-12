@@ -27,7 +27,7 @@ class DropMissingRowsOperation(CleaningOperation):
         assert isinstance(hint, DropMissingRowsHint)
         initial_rows = len(df)
         
-        if hint.target_columns:
+        if hint.target_columns is not None:
             # Drop rows with missing values in specific columns
             df_cleaned = df.dropna(subset=hint.target_columns, how=hint.how)
         else:
@@ -36,6 +36,9 @@ class DropMissingRowsOperation(CleaningOperation):
         
         rows_dropped = initial_rows - len(df_cleaned)
         
+        checked = hint.target_columns if hint.target_columns is not None else list(df.columns)
+        missing = df[checked].isna()
+        dropped_mask = missing.any(axis=1) if hint.how == "any" else missing.all(axis=1)
         record = TransformationRecord(
             operation_name=self.name,
             timestamp=datetime.now(),
@@ -43,7 +46,10 @@ class DropMissingRowsOperation(CleaningOperation):
             details={
                 "initial_rows": initial_rows,
                 "final_rows": len(df_cleaned),
-                "columns_checked": hint.target_columns or "all"
+                "columns_checked": checked,
+                "dropped_row_positions": [i for i, dropped in enumerate(dropped_mask) if dropped],
+                "dropped_row_indices": df.index[dropped_mask].tolist(),
+                "missing_counts": {col: int(missing[col].sum()) for col in checked}
             }
         )
         

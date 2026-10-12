@@ -1,4 +1,6 @@
-from typing import Any, Union, Dict, List, _GenericAlias
+from typing import Any, Union, Dict, List, get_origin, get_args
+import types
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from .output_types import OutputType
@@ -23,6 +25,7 @@ def infer_output_type(return_type: Any, strict: bool = True) -> OutputType:
         pd.DataFrame: OutputType.PARQUET,
         pd.Series: OutputType.CSV,
         str: OutputType.TEXT,
+        bool: OutputType.JSON,
         int: OutputType.JSON,
         float: OutputType.JSON,
         bytes: OutputType.BINARY,
@@ -31,17 +34,18 @@ def infer_output_type(return_type: Any, strict: bool = True) -> OutputType:
         list: OutputType.JSON,
     }
     
-    # Handle Union types
-    if hasattr(return_type, "__origin__") and return_type.__origin__ is Union:
-        return_type = return_type.__args__[0]
-    
-    # Handle generic types (Dict, List)
-    if isinstance(return_type, _GenericAlias):
-        if return_type.__origin__ in (dict, Dict):
-            return OutputType.JSON
-        if return_type.__origin__ in (list, List):
-            return OutputType.JSON
-    
+    origin = get_origin(return_type)
+    if origin in (Union, types.UnionType):
+        members = [member for member in get_args(return_type) if member is not type(None)]
+        inferred = {infer_output_type(member, strict=strict) for member in members}
+        if len(inferred) == 1:
+            return inferred.pop()
+        raise ValueError(f"Cannot infer a single output type for {return_type}")
+    if origin in (dict, list, tuple):
+        return OutputType.JSON
+    if isinstance(return_type, type) and issubclass(return_type, (np.number, np.bool_)):
+        return OutputType.JSON
+
     # Check if it's a dictionary type
     if (isinstance(return_type, type) and 
         issubclass(return_type, dict)) or return_type is dict:

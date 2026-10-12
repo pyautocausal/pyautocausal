@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Set, Union, Dict, Any
 import pandas as pd
 import numpy as np
+from numbers import Real
 
 from ..base import (
     DataValidationCheck,
@@ -936,16 +937,10 @@ class TimePeriodStandardizationConfig(DataValidationConfig):
 
 
 class TimePeriodStandardizationCheck(DataValidationCheck[TimePeriodStandardizationConfig]):
-    """Check and prepare standardization of time periods relative to treatment start.
-    
-    This check:
-    1. Finds the minimum time period where treatment==1 occurs
-    2. Creates a standardized mapping where that period becomes index 0
-    3. Earlier periods get negative indices (-1, -2, etc.)
-    4. Later periods get positive indices (1, 2, etc.)
-    5. Returns a cleaning hint with the value mapping
-    
-    Always requires treatment data to exist - fails with ERROR if no treatment==1 found.
+    """Map distinct chronological periods to consecutive integers starting at 1.
+
+    Full datetime precision is preserved. The first treated period is recorded
+    as metadata; 0 remains available to represent never-treated cohorts.
     """
     
     @property
@@ -1008,15 +1003,15 @@ class TimePeriodStandardizationCheck(DataValidationCheck[TimePeriodStandardizati
             parsed_times = self._parse_time_periods(unique_times)
             parsed_treatment_times = self._parse_time_periods(treatment_times)
             
-            # Find the minimum treatment time period (this becomes index 0)
             treatment_start_parsed = min(parsed_treatment_times)
-            
-            # Create mapping from original values to standardized indices
-            sorted_times = sorted(parsed_times)
-            
+
+            # Distinct source labels must not silently collapse to one instant.
+            if len(set(parsed_times)) != len(parsed_times):
+                raise ValueError("Distinct time labels describe the same period; normalize them explicitly before cleaning")
+            ranks = {value: rank for rank, value in enumerate(sorted(parsed_times), start=1)}
             value_mapping = {}
             for original_val, parsed_val in zip(unique_times, parsed_times):
-                value_mapping[original_val] = sorted_times.index(parsed_val) + 1
+                value_mapping[original_val] = ranks[parsed_val]
                 if parsed_val == treatment_start_parsed:
                     treatment_start_original = original_val
             
@@ -1030,7 +1025,8 @@ class TimePeriodStandardizationCheck(DataValidationCheck[TimePeriodStandardizati
                     "total_periods": len(unique_times),
                     "pre_treatment_periods": sum(1 for v in value_mapping.values() if v < value_mapping[treatment_start_original]),
                     "post_treatment_periods": sum(1 for v in value_mapping.values() if v >= value_mapping[treatment_start_original]),
-                    "original_treatment_start": str(treatment_start_original)
+                    "original_treatment_start": str(treatment_start_original),
+                    "treatment_start_period": value_mapping[treatment_start_original]
                 }
             )
             
@@ -1054,45 +1050,39 @@ class TimePeriodStandardizationCheck(DataValidationCheck[TimePeriodStandardizati
             return self._create_result(False, issues)
     
     def _parse_time_periods(self, time_values):
-        """Parse time periods into comparable values.
-        
-        Handles multiple formats:
-        - Datetime strings (parsed with pd.to_datetime)
-        - Datetime objects
-        - Numeric values (treated as periods)
-        """
+        """Return comparable values without rounding integers or timestamps."""
         parsed = []
-        
         for val in time_values:
             if pd.isna(val):
                 continue
-                
-            # Try numeric first (integers, floats)
-            try:
-                if isinstance(val, (int, float)) and not isinstance(val, bool):
-                    parsed.append(float(val))
+            if isinstance(val, Real) and not isinstance(val, (bool, np.bool_)):
+                if not np.isfinite(val):
+                    raise ValueError(f"Time period must be finite: {val}")
+                parsed.append(val)
+                continue
+            if isinstance(val, (str, np.datetime64)) or hasattr(val, 'strftime'):
+                try:
+                    timestamp = pd.Timestamp(val)
+                    if pd.isna(timestamp):
+                        raise ValueError("Missing timestamp")
+                    parsed.append(timestamp)
                     continue
-            except (ValueError, TypeError):
-                pass
-            
-            # Try datetime parsing
-            try:
-                if isinstance(val, str) or hasattr(val, 'strftime'):
-                    dt = pd.to_datetime(val)
-                    # Convert to ordinal for comparison (days since year 1)
-                    parsed.append(dt.toordinal())
+                except (ValueError, TypeError):
+                    pass
+            if isinstance(val, str):
+                try:
+                    value = int(val)
+                except ValueError:
+                    try:
+                        value = float(val)
+                    except ValueError:
+                        value = float("nan")
+                if np.isfinite(value):
+                    parsed.append(value)
                     continue
-            except (ValueError, TypeError):
-                pass
-            
-            # If nothing else works, try to convert to string and then float
-            try:
-                parsed.append(float(str(val)))
-            except (ValueError, TypeError):
-                raise ValueError(f"Unable to parse time period value: {val} (type: {type(val)})")
-        
+            raise ValueError(f"Unable to parse time period value: {val} (type: {type(val)})")
         return parsed
-    
+
     def _check_for_mixed_types(self, time_values):
         """Check if time column contains mixed data types.
         
@@ -1114,7 +1104,7 @@ class TimePeriodStandardizationCheck(DataValidationCheck[TimePeriodStandardizati
             val_type = type(val)
             
             # Categorize by type family
-            if isinstance(val, (int, float)) and not isinstance(val, bool):
+            if isinstance(val, Real) and not isinstance(val, (bool, np.bool_)):
                 numeric_types.add(val_type.__name__)
             elif isinstance(val, str):
                 # Check if string could be a date
@@ -1123,7 +1113,7 @@ class TimePeriodStandardizationCheck(DataValidationCheck[TimePeriodStandardizati
                     string_types.add("date_string")
                 except (ValueError, TypeError):
                     string_types.add("string")
-            elif hasattr(val, 'strftime'):  # datetime-like objects
+            elif isinstance(val, np.datetime64) or hasattr(val, 'strftime'):  # datetime-like objects
                 datetime_types.add(val_type.__name__)
             else:
                 other_types.add(val_type.__name__)

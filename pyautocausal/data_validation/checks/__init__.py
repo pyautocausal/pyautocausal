@@ -15,8 +15,10 @@ from .causal_checks import (
     TreatmentPersistenceCheck, TreatmentPersistenceConfig,
     OutcomeVariableCheck, OutcomeVariableConfig,
     CausalMethodRequirementsCheck, CausalMethodRequirementsConfig,
-    TreatmentTimingPatternsCheck, TreatmentTimingPatternsCheck
+    TreatmentTimingPatternsCheck, TreatmentTimingPatternsConfig,
+    TimePeriodStandardizationCheck, TimePeriodStandardizationConfig
 )
+from .design_checks import CausalDesignCheck, CausalDesignConfig
 from .missing_data_checks import (
     MissingDataCheck, MissingDataConfig,
     CompleteCasesCheck, CompleteCasesConfig
@@ -31,7 +33,7 @@ __all__ = [
     "NonEmptyDataCheck", "NonEmptyDataConfig",
     "RequiredColumnsCheck", "RequiredColumnsConfig",
     "ColumnTypesCheck", "ColumnTypesConfig",
-    "NoDuplicateColumnsCheck", "NoDuplicateColumnsCheck",
+    "NoDuplicateColumnsCheck", "NoDuplicateColumnsConfig",
     "DuplicateRowsCheck", "DuplicateRowsConfig",
     # Causal Checks
     "BinaryTreatmentCheck", "BinaryTreatmentConfig",
@@ -41,7 +43,9 @@ __all__ = [
     "TreatmentPersistenceCheck", "TreatmentPersistenceConfig",
     "OutcomeVariableCheck", "OutcomeVariableConfig",
     "CausalMethodRequirementsCheck", "CausalMethodRequirementsConfig",
-    "TreatmentTimingPatternsCheck", "TreatmentTimingPatternsCheck",
+    "TreatmentTimingPatternsCheck", "TreatmentTimingPatternsConfig",
+    "TimePeriodStandardizationCheck", "TimePeriodStandardizationConfig",
+    "CausalDesignCheck", "CausalDesignConfig",
     # Missing Data Checks
     "MissingDataCheck", "MissingDataConfig",
     "CompleteCasesCheck", "CompleteCasesConfig",

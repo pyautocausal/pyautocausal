@@ -53,6 +53,7 @@ class EventStudySpec(BaseSpec):
     event_cols: List[str]
     reference_period: int
     model: Optional[Any] = None
+    event_time_map: Dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -65,6 +66,8 @@ class StaggeredDiDSpec(BaseSpec):
     unit_col: str
     treatment_time_col: str
     model: Optional[Any] = None
+    event_time_map: Dict[str, int] = field(default_factory=dict)
+    reference_period: int = -1
 
 
 @dataclass
@@ -96,6 +99,14 @@ class UpliftSpec(BaseSpec):
     model_type: Optional[str] = None
     models: Optional[Dict[str, Any]] = None
     evaluation_metrics: Optional[Dict[str, float]] = None
+    experimental: bool = True
+    inference: Optional[Dict[str, Any]] = None
+
+
+def _treatment_column(treatment_cols):
+    if not treatment_cols or len(treatment_cols) != 1:
+        raise ValueError("Exactly one treatment column must be specified")
+    return treatment_cols[0]
 
 
 def validate_and_prepare_data(
@@ -104,7 +115,9 @@ def validate_and_prepare_data(
     treatment_cols: List[str],
     required_columns: List[str] = None,
     control_cols: Optional[List[str]] = None,
-    excluded_cols: List[str] = None
+    excluded_cols: List[str] = None,
+    missing_strategy: str = 'drop_rows',
+    max_missing_fraction: float = 1.0
 ) -> Tuple[pd.DataFrame, List[str]]:
     """
     Validate and prepare dataframe for specification creation.
@@ -120,36 +133,49 @@ def validate_and_prepare_data(
     Returns:
         Tuple of (cleaned dataframe, control columns list)
     """
-    # Handle control_cols=None appropriately
+    if not treatment_cols or len(treatment_cols) != 1:
+        raise ValueError("Exactly one treatment column must be specified")
+    all_required = [outcome_col] + list(treatment_cols) + list(required_columns or [])
     if control_cols is None:
-        control_cols = []  # Default empty list instead of raising error
-    
-    # Build complete list of required columns
-    all_required = [outcome_col] + treatment_cols
-    if required_columns:
-        all_required.extend(required_columns)
-    
-    # Check if required columns exist
+        excluded = set(all_required + list(excluded_cols or []))
+        # Conventional design metadata are not adjustment covariates.
+        excluded.update(['post', 'relative_time', 'treatment_time'])
+        candidates = [col for col in data.columns if col not in excluded]
+        unsupported = [col for col in candidates
+                       if data[col].notna().any()
+                       and not pd.api.types.is_numeric_dtype(data[col])]
+        if unsupported:
+            raise ValueError(
+                f"Cannot automatically infer numeric controls from columns {unsupported}. "
+                "Encode categorical controls explicitly, or pass control_cols to select "
+                "the intended controls ([] requests none)."
+            )
+        control_cols = [col for col in candidates if pd.api.types.is_numeric_dtype(data[col])]
+    else:
+        control_cols = list(control_cols)
+    if set(control_cols) & set([outcome_col] + treatment_cols):
+        raise ValueError("Control columns must not contain the outcome or treatment")
+    all_required = list(dict.fromkeys(all_required + control_cols))
     missing_columns = [col for col in all_required if col not in data.columns]
     if missing_columns:
-        raise ValueError(f"DataFrame is missing the following required columns: {missing_columns}. All required columns are: {all_required}")
-    
-    # Clean data (make a copy to avoid modifying the original)
-    cleaned_data = data.copy().dropna()
-    
-    # Determine control columns if not provided
-    if not control_cols:
-        # Get numeric columns as potential controls
-        numeric_cols = cleaned_data.select_dtypes(include=[np.number]).columns
-        
-        # Determine columns to exclude
-        to_exclude = [outcome_col] + treatment_cols
-        if excluded_cols:
-            to_exclude.extend(excluded_cols)
-            
-        # Filter numeric columns to only include those not in excluded list
-        control_cols = [col for col in numeric_cols if col not in to_exclude]
-        
+        raise ValueError(f"DataFrame is missing required columns: {missing_columns}")
+    if missing_strategy not in {'drop_rows', 'reject'}:
+        raise ValueError("missing_strategy must be 'drop_rows' or 'reject'")
+    if not 0 <= max_missing_fraction <= 1:
+        raise ValueError("max_missing_fraction must lie between 0 and 1")
+    missing_rows = data[all_required].isna().any(axis=1)
+    fraction = float(missing_rows.mean()) if len(data) else 0.0
+    if missing_rows.any() and (missing_strategy == 'reject' or fraction > max_missing_fraction):
+        raise ValueError(f"Missing required values in {int(missing_rows.sum())} rows ({fraction:.1%})")
+    cleaned_data = data.loc[~missing_rows].copy()
+    cleaned_data.attrs['preparation'] = {
+        'rows_before': len(data), 'rows_after': len(cleaned_data),
+        'rows_dropped': len(data) - len(cleaned_data),
+        'required_columns': all_required, 'missing_data_policy': missing_strategy,
+        'max_missing_fraction': max_missing_fraction,
+    }
+    if cleaned_data.empty:
+        raise ValueError("No complete observations remain for the requested specification")
     return cleaned_data, control_cols
 
 
@@ -159,7 +185,9 @@ def create_uplift_specification(
     outcome_col: str = 'y',
     treatment_cols: List[str] = ['treat'],
     unit_col: str = 'id_unit',
-    control_cols: Optional[List[str]] = None
+    control_cols: Optional[List[str]] = None,
+    missing_strategy: str = 'drop_rows',
+    max_missing_fraction: float = 1.0
 ) -> UpliftSpec:
     """
     Create uplift modeling specification following PyAutoCausal patterns.
@@ -172,18 +200,22 @@ def create_uplift_specification(
         data=data,
         outcome_col=outcome_col,
         treatment_cols=treatment_cols,
+        missing_strategy=missing_strategy,
+        max_missing_fraction=max_missing_fraction,
         control_cols=control_cols,
-        excluded_cols=[unit_col]  # Exclude ID from controls
+        excluded_cols=[unit_col, 't']  # Structural labels are not controls
     )
     
     # Additional validation for uplift modeling
-    treatment_col = treatment_cols[0]  # Use first treatment
-    if data[outcome_col].nunique() != 2:
-        raise ValueError(f"Outcome {outcome_col} must be binary for uplift modeling")
-    if data[treatment_col].nunique() != 2:
-        raise ValueError(f"Treatment {treatment_col} must be binary for uplift modeling")
+    treatment_col = _treatment_column(treatment_cols)  # Use first treatment
+    if not data[outcome_col].isin([0, 1]).all():
+        raise ValueError(f"Outcome {outcome_col} must be binary (0/1) for uplift modeling")
+    if not data[treatment_col].isin([0, 1]).all() or data[treatment_col].nunique() != 2:
+        raise ValueError(f"Treatment {treatment_col} must contain both binary arms (0/1)")
     
-    formula = f"{outcome_col} ~ {treatment_col} + " + " + ".join(control_cols)
+    formula = f"{outcome_col} ~ {treatment_col}"
+    if control_cols:
+        formula += " + " + " + ".join(control_cols)
     
     return UpliftSpec(
         data=data,
@@ -200,7 +232,12 @@ def create_cross_sectional_specification(
     data: pd.DataFrame, 
     outcome_col: str = 'y', 
     treatment_cols: List[str] = ['treat'],
-    control_cols: Optional[List[str]] = None
+    control_cols: Optional[List[str]] = None,
+    treatment_value: Any = None,
+    missing_strategy: str = 'drop_rows',
+    max_missing_fraction: float = 1.0,
+    unit_col: Optional[str] = 'id_unit',
+    time_col: Optional[str] = 't',
 ) -> BaseSpec:
     """
     Create a standard regression specification.
@@ -209,20 +246,26 @@ def create_cross_sectional_specification(
         data: DataFrame with outcome, treatment, and controls
         outcome_col: Name of outcome column
         treatment_cols: List of treatment column names (only first is used for now)
-        control_cols: List of control variable columns
+        control_cols: None selects numeric controls; [] requests no controls.
+        unit_col: Optional identifier column excluded from inferred controls.
+        time_col: Optional period column excluded from inferred controls.
+        treatment_value: Label denoting treatment when coding is not 0/1.
         
     Returns:
         BaseSpec object with specification information
     """
     # TODO:Use first treatment column for now (may extend to multiple in future)
-    treatment_col = treatment_cols[0]
+    treatment_col = _treatment_column(treatment_cols)
     
     # Validate and prepare data
     data, control_cols = validate_and_prepare_data(
         data=data,
         outcome_col=outcome_col,
         treatment_cols=treatment_cols,
-        control_cols=control_cols
+        missing_strategy=missing_strategy,
+        max_missing_fraction=max_missing_fraction,
+        control_cols=control_cols,
+        excluded_cols=[name for name in (unit_col, time_col) if name is not None],
     )
     
     # Standard-specific validation: check if treatment column is binary
@@ -232,8 +275,16 @@ def create_cross_sectional_specification(
     elif n_unique_treatment < 2:
         raise ValueError(f"Treatment column {treatment_col} must have at least two unique values")  
     
-    # Make treatment column binary (0/1)
-    data[treatment_col] = np.where(data[treatment_col] == data[treatment_col].unique()[0], 0, 1)
+    # Preserve the meaning of 0/1; arbitrary labels require an explicit choice.
+    values = data[treatment_col].unique()
+    if treatment_value is None:
+        if not data[treatment_col].isin([0, 1]).all():
+            raise ValueError("Treatment must use 0/1 coding, or supply treatment_value explicitly")
+        data[treatment_col] = data[treatment_col].astype(int)
+    else:
+        if treatment_value not in values:
+            raise ValueError("treatment_value must be an observed treatment label")
+        data[treatment_col] = (data[treatment_col] == treatment_value).astype(int)
     
     # Create formula
     formula = (f"{outcome_col} ~ {treatment_col} + " + " + ".join(control_cols) 
@@ -242,11 +293,19 @@ def create_cross_sectional_specification(
     # return CrossSectionalSpec with treatment_cols
     return CrossSectionalSpec(
         outcome_col=outcome_col,
-        treatment_cols=treatment_cols,  # Use the list
+        treatment_cols=treatment_cols,
         control_cols=control_cols,
         data=data,
         formula=formula
     )
+
+
+def _generated_column_name(data, preferred):
+    """Allocate an internal name without replacing any user-supplied column."""
+    name = preferred
+    while name in data.columns:
+        name = '_pac_' + name
+    return name
 
 
 @make_transformable
@@ -260,7 +319,9 @@ def create_did_specification(
     treatment_time_col: Optional[str] = None,
     include_unit_fe: bool = True,
     include_time_fe: bool = True,
-    control_cols: Optional[List[str]] = None
+    control_cols: Optional[List[str]] = None,
+    missing_strategy: str = 'drop_rows',
+    max_missing_fraction: float = 1.0
 ) -> DiDSpec:
     """
     Create a DiD specification.
@@ -281,12 +342,14 @@ def create_did_specification(
         DiDSpec object with DiD specification information
     """
     # TODO: Use first treatment column for now (may extend to multiple in future)
-    treatment_col = treatment_cols[0]
+    treatment_col = _treatment_column(treatment_cols)
     # Validate and prepare data
     data, control_cols = validate_and_prepare_data(
         data=data,
         outcome_col=outcome_col,
         treatment_cols=treatment_cols,
+        missing_strategy=missing_strategy,
+        max_missing_fraction=max_missing_fraction,
         required_columns=[time_col, unit_col],
         control_cols=control_cols,
         excluded_cols=[time_col, unit_col]
@@ -294,23 +357,23 @@ def create_did_specification(
     
     # Create post-treatment indicator if not provided
     if post_col is None:
+        post_col = _generated_column_name(data, 'post')
         if treatment_time_col is not None:
             # Ensure never-treated units have 0 in treatment_time_col, not NaN
             data[treatment_time_col] = data[treatment_time_col].fillna(0)
             # Create post indicator based on treatment timing
-            data['post'] = (data[time_col] >= data[treatment_time_col]).astype(int)
-            post_col = 'post'
+            data[post_col] = (data[time_col] >= data[treatment_time_col]).astype(int)
         else:
             # Try to infer post periods for treated units
             treat_start = data[data[treatment_col] == 1][time_col].min()
-            data['post'] = (data[time_col] >= treat_start).astype(int) if pd.notna(treat_start) else 0
-            post_col = 'post'
+            data[post_col] = (data[time_col] >= treat_start).astype(int) if pd.notna(treat_start) else 0
     
     # Create interaction term
-    data['treat_post'] = data[treatment_col] * data[post_col]
+    interaction_col = _generated_column_name(data, 'treat_post')
+    data[interaction_col] = data[treatment_col] * data[post_col]
     
     # Construct formula
-    formula_parts = [outcome_col, "~", "treat_post"]
+    formula_parts = [outcome_col, "~", interaction_col]
     
     if not include_unit_fe and not include_time_fe:
         # Base model with just the interaction and controls
@@ -345,6 +408,24 @@ def create_did_specification(
     )
 
 
+def _validate_adoption(data, unit_col, time_col, treatment_col):
+    if not data[treatment_col].isin([0, 1]).all():
+        raise ValueError("Panel treatment must be coded 0/1")
+    if data.duplicated([unit_col, time_col]).any():
+        raise ValueError("Panel must contain one observation per unit and time")
+    ordered = data.sort_values([unit_col, time_col])
+    treatment_changes = ordered[treatment_col].astype('int64').groupby(
+        ordered[unit_col], sort=False, observed=True
+    ).diff()
+    if treatment_changes.lt(0).any():
+        raise ValueError("Treatment adoption must be permanent (no treatment reversals)")
+    if not ordered[treatment_col].eq(1).any():
+        raise ValueError("At least one treated unit is required")
+    first = ordered.groupby(unit_col).first()[treatment_col]
+    if first.eq(1).any():
+        raise ValueError("Every treated unit must have an observed pre-treatment period")
+
+
 @make_transformable
 def create_event_study_specification(
     data: pd.DataFrame, 
@@ -356,7 +437,9 @@ def create_event_study_specification(
     relative_time_col: Optional[str] = None,
     pre_periods: int = 3,
     post_periods: int = 3,
-    control_cols: Optional[List[str]] = None
+    control_cols: Optional[List[str]] = None,
+    missing_strategy: str = 'drop_rows',
+    max_missing_fraction: float = 1.0
 ) -> EventStudySpec:
     """
     Create an Event Study specification.
@@ -376,7 +459,7 @@ def create_event_study_specification(
         EventStudySpec object with event study specification information
     """
     # Use first treatment column for now (may extend to multiple in future)
-    treatment_col = treatment_cols[0]
+    treatment_col = _treatment_column(treatment_cols)
     
     # Validate and prepare data
     # Ensure 'post' is excluded if it exists to avoid issues with event dummies + time FEs
@@ -388,20 +471,26 @@ def create_event_study_specification(
         data=data,
         outcome_col=outcome_col,
         treatment_cols=treatment_cols,
+        missing_strategy=missing_strategy,
+        max_missing_fraction=max_missing_fraction,
         required_columns=[time_col, unit_col],
         control_cols=control_cols, # Pass user-provided or None
         excluded_cols=current_excluded_cols
     )
     
+    _validate_adoption(data, unit_col, time_col, treatment_col)
+
     # Infer treatment timing from the data (same approach as staggered specification)
     treatment_times = data[data[treatment_col] == 1].groupby(unit_col)[time_col].min()
-    data['treatment_time'] = data[unit_col].map(treatment_times)
+    treatment_time_column = _generated_column_name(data, 'treatment_time')
+    relative_time_column = _generated_column_name(data, 'relative_time')
+    data[treatment_time_column] = data[unit_col].map(treatment_times)
 
     # Create relative time variable (same approach as staggered specification)
-    data['relative_time'] = pd.NA
-    mask = ~data['treatment_time'].isna()
-    data.loc[mask, 'relative_time'] = (data.loc[mask, time_col] - data.loc[mask, 'treatment_time']).astype(int)
-    data.loc[~mask, 'relative_time'] = 0  # Never treated units get 0
+    data[relative_time_column] = pd.NA
+    mask = ~data[treatment_time_column].isna()
+    data.loc[mask, relative_time_column] = (data.loc[mask, time_col] - data.loc[mask, treatment_time_column]).astype(int)
+    data.loc[~mask, relative_time_column] = 0  # Never treated units get 0
     
     # Filter to include only the specified pre and post periods
     if pre_periods > 0 or post_periods > 0:
@@ -410,20 +499,21 @@ def create_event_study_specification(
         
         # Keep rows that either have relative_time==0 (never treated) or are within the specified range
         if min_period is not None and max_period is not None:
-            data = data[(data['relative_time'] == 0) | 
-                       ((data['relative_time'] >= min_period) & (data['relative_time'] <= max_period))]
+            data = data[(data[relative_time_column] == 0) |
+                       ((data[relative_time_column] >= min_period) & (data[relative_time_column] <= max_period))]
         elif min_period is not None:
-            data = data[(data['relative_time'] == 0) | (data['relative_time'] >= min_period)]
+            data = data[(data[relative_time_column] == 0) | (data[relative_time_column] >= min_period)]
         elif max_period is not None:
-            data = data[(data['relative_time'] == 0) | (data['relative_time'] <= max_period)]
+            data = data[(data[relative_time_column] == 0) | (data[relative_time_column] <= max_period)]
 
-    print(data['relative_time'].value_counts())
+    print(data[relative_time_column].value_counts())
     
     # Create event time dummies manually to avoid issues with negative signs in column names
     # Get unique relative time values (excluding the reference period)
-    unique_times = sorted([t for t in data['relative_time'].dropna().unique() if t != reference_period])
+    unique_times = sorted([t for t in data[relative_time_column].dropna().unique() if t != reference_period])
     
     event_cols = []
+    event_time_map = {}
     for t in unique_times:
         # Create formula-friendly column names
         if t < 0:
@@ -433,8 +523,10 @@ def create_event_study_specification(
         else:
             col_name = 'event_period0'       # event_period0 for t=0
         
+        col_name = _generated_column_name(data, col_name)
+        event_time_map[col_name] = int(t)
         # Create the dummy variable
-        data[col_name] = (data['relative_time'] == t).astype(int)
+        data[col_name] = ((data[relative_time_column] == t) & data[treatment_time_column].notna()).astype(int)
         event_cols.append(col_name)
     
     # Construct formula
@@ -460,8 +552,9 @@ def create_event_study_specification(
         control_cols=control_cols,
         time_col=time_col,
         unit_col=unit_col,
-        relative_time_col='relative_time',
+        relative_time_col=relative_time_column,
         event_cols=event_cols,
+        event_time_map=event_time_map,
         reference_period=reference_period,
         data=data,
         formula=formula
@@ -477,7 +570,9 @@ def create_staggered_did_specification(
     unit_col: str = 'id_unit',
     control_cols: Optional[List[str]] = None,
     pre_periods: int = 4,
-    reference_period: int = -1
+    reference_period: int = -1,
+    missing_strategy: str = 'drop_rows',
+    max_missing_fraction: float = 1.0
 ) -> StaggeredDiDSpec:
     """
     Create a Staggered DiD specification.
@@ -498,33 +593,40 @@ def create_staggered_did_specification(
         StaggeredDiDSpec object with specification information
     """
     # Use first treatment column for now (may extend to multiple in future)
-    treatment_col = treatment_cols[0]
+    treatment_col = _treatment_column(treatment_cols)
     
     # Validate and prepare data
     data, control_cols = validate_and_prepare_data(
         data=data,
         outcome_col=outcome_col,
         treatment_cols=treatment_cols,
+        missing_strategy=missing_strategy,
+        max_missing_fraction=max_missing_fraction,
         required_columns=[time_col, unit_col],
         control_cols=control_cols,
         excluded_cols=[time_col, unit_col]
     )
 
+    _validate_adoption(data, unit_col, time_col, treatment_col)
+
     # Infer treatment timing from the data
     treatment_times = data[data[treatment_col] == 1].groupby(unit_col)[time_col].min()
-    data['treatment_time'] = data[unit_col].map(treatment_times)
+    treatment_time_column = _generated_column_name(data, 'treatment_time')
+    relative_time_column = _generated_column_name(data, 'relative_time')
+    data[treatment_time_column] = data[unit_col].map(treatment_times)
 
     # Create relative time variable 
-    data['relative_time'] = pd.NA
-    mask = ~data['treatment_time'].isna()
-    data.loc[mask, 'relative_time'] = (data.loc[mask, time_col] - data.loc[mask, 'treatment_time']).astype(int)
-    data.loc[~mask, 'relative_time'] = 0  # Never treated units get 0 (separate from reference period)
+    data[relative_time_column] = pd.NA
+    mask = ~data[treatment_time_column].isna()
+    data.loc[mask, relative_time_column] = (data.loc[mask, time_col] - data.loc[mask, treatment_time_column]).astype(int)
+    data.loc[~mask, relative_time_column] = 0  # Never treated units get 0 (separate from reference period)
     
     # Create event time dummies manually to avoid issues with negative signs in column names
     # Get unique relative time values (excluding the reference period and never-treated period)
-    unique_times = sorted([t for t in data['relative_time'].dropna().unique() if t != reference_period])
+    unique_times = sorted([t for t in data[relative_time_column].dropna().unique() if t != reference_period])
     
     event_cols = []
+    event_time_map = {}
     for t in unique_times:
         # Create formula-friendly column names
         if t < 0:
@@ -532,8 +634,10 @@ def create_staggered_did_specification(
         elif t >= 0:
             col_name = f'event_post{t}'      # event_post1, event_post2, etc.
         
+        col_name = _generated_column_name(data, col_name)
+        event_time_map[col_name] = int(t)
         # Create the dummy variable
-        data[col_name] = (data['relative_time'] == t).astype(int)
+        data[col_name] = ((data[relative_time_column] == t) & data[treatment_time_column].notna()).astype(int)
         event_cols.append(col_name)
 
     # Construct formula
@@ -550,7 +654,9 @@ def create_staggered_did_specification(
         treatment_cols=treatment_cols,
         time_col=time_col,
         unit_col=unit_col,
-        treatment_time_col='treatment_time',
+        treatment_time_col=treatment_time_column,
+        event_time_map=event_time_map,
+        reference_period=reference_period,
         control_cols=control_cols,
         data=data,
         formula=formula
@@ -564,7 +670,9 @@ def create_synthdid_specification(
     treatment_cols: List[str] = ['treat'],
     time_col: str = 't',
     unit_col: str = 'id_unit',
-    control_cols: Optional[List[str]] = None
+    control_cols: Optional[List[str]] = None,
+    missing_strategy: str = 'drop_rows',
+    max_missing_fraction: float = 1.0
 ) -> SynthDIDSpec:
     """
     Create a Synthetic Difference-in-Differences specification.
@@ -583,13 +691,15 @@ def create_synthdid_specification(
     
     
     # Use first treatment column for now
-    treatment_col = treatment_cols[0]
+    treatment_col = _treatment_column(treatment_cols)
     
     # Validate and prepare data
     data, control_cols = validate_and_prepare_data(
         data=data,
         outcome_col=outcome_col,
         treatment_cols=treatment_cols,
+        missing_strategy=missing_strategy,
+        max_missing_fraction=max_missing_fraction,
         required_columns=[time_col, unit_col],
         control_cols=control_cols,
         excluded_cols=[time_col, unit_col]
@@ -599,8 +709,6 @@ def create_synthdid_specification(
     treated_units = data[data[treatment_col] == 1][unit_col].unique()
     if len(treated_units) == 0:
         raise ValueError("No treated units found in data")
-    if len(treated_units) > 1:
-        raise ValueError("Synthetic DiD requires exactly one treated unit")
     
     # Convert to panel format expected by synthdid
     try:
@@ -625,12 +733,10 @@ def create_synthdid_specification(
             
             for k, cov_col in enumerate(control_cols):
                 # Reshape covariate data to matrix form
-                cov_matrix = data.pivot_table(
-                    index=unit_col, 
-                    columns=time_col, 
-                    values=cov_col, 
-                    fill_value=0
-                ).values
+                cov_matrix = data.pivot(
+                    index=unit_col, columns=time_col, values=cov_col
+                ).reindex(index=panel_result['Y_df'].index,
+                          columns=panel_result['Y_df'].columns).to_numpy(dtype=float)
                 X[:, :, k] = cov_matrix
         
     except Exception as e:

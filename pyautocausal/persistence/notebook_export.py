@@ -4,6 +4,8 @@ import nbformat
 from nbformat.v4 import new_notebook, new_code_cell, new_markdown_cell
 import inspect
 import ast
+import textwrap
+import json
 from pathlib import Path
 from ..orchestration.nodes import Node, InputNode, DecisionNode
 from ..orchestration.graph import ExecutableGraph
@@ -28,6 +30,7 @@ class NotebookExporter:
         # get module this is run from
         self.this_module = inspect.getmodule(inspect.getouterframes(inspect.currentframe())[1][0])
         self.needed_imports = set()
+        self.compact = False
     def _get_topological_order(self) -> List[Node]:
         """Get a valid sequential order of nodes for the notebook."""
         return list(nx.topological_sort(self.graph))
@@ -37,11 +40,16 @@ class NotebookExporter:
         header = "# Causal Analysis Pipeline\n\n"
         header += "This notebook was automatically generated from a PyAutoCausal pipeline execution.\n\n"
         
+        counts = {}
+        for node in self.graph.nodes:
+            counts[node.state.value] = counts.get(node.state.value, 0) + 1
+        header += "Original execution: " + ", ".join(f"{count} {state}" for state, count in sorted(counts.items())) + ".\n\n"
+        header += "Execution diagnostics, settings, sample information and package versions appear at the end.\n"
         self.nb.cells.append(new_markdown_cell(header))
     
     def _create_imports_cell(self, cell_index: int) -> None:
         """Create cell with all necessary imports."""
-        all_imports = "\n".join(self.needed_imports)
+        all_imports = "\n".join(sorted(self.needed_imports))
         # insert cell at cell_index
         self.nb.cells.insert(cell_index, new_code_cell(all_imports))
     
@@ -121,7 +129,7 @@ class NotebookExporter:
                 pass
             
             # Get function source and parse it
-            source = inspect.getsource(func)
+            source = textwrap.dedent(inspect.getsource(func))
             tree = ast.parse(source)
             
             # Collect all names used in the function
@@ -185,6 +193,9 @@ class NotebookExporter:
         else:
             func = node.action_function
         
+        if getattr(func, '_notebook_passthrough', False):
+            return f"def {node.name}_function(**kwargs):\n    return next(iter(kwargs.values()))"
+
         # Check if this is an exposed wrapper function
         if self._is_exposed_wrapper(func):
             target_func_or_wrapper, arg_mapping = self._get_exposed_target_info(func)
@@ -199,7 +210,11 @@ class NotebookExporter:
                 # Handle case where the target function could not be resolved
                 return f"# Source code for target function could not be resolved."
 
-            target_source = inspect.getsource(target_func)
+            portable = self._portable_function_definition(target_func, node.name)
+            if portable is not None:
+                return portable
+
+            target_source = textwrap.dedent(inspect.getsource(target_func))
             
             # Remove the @make_transformable decorator lines but preserve indentation
             target_lines = target_source.split('\n')
@@ -223,16 +238,21 @@ class NotebookExporter:
             # Add both the target and wrapper with proper imports
             return comment + target_source
         
+        portable = self._portable_function_definition(func, node.name)
+        if portable is not None:
+            return portable
+
         # For regular functions, collect imports
         self._get_function_imports(func)
         
         # Handle lambdas
-        source = inspect.getsource(func)
-        if source.strip().startswith('lambda'):
-            # Get the lambda body
-            lambda_body = source.split(':')[1].strip()
-            # Create a proper function definition
-            source = f"def {node.name}_func(*args, **kwargs):\n    return {lambda_body}"
+        source = textwrap.dedent(inspect.getsource(func))
+        if getattr(func, '__name__', None) == '<lambda>':
+            candidates = [item for item in ast.walk(ast.parse(source)) if isinstance(item, ast.Lambda)]
+            if len(candidates) != 1:
+                raise ValueError(f"Cannot unambiguously export lambda in node '{node.name}'; use a named function")
+            expression = ast.unparse(candidates[0])
+            source = f"def {node.name}_function(*args, **kwargs):\n    return ({expression})(*args, **kwargs)"
         else:
             # For regular functions, we need to preserve indentation but handle decorators
             func_lines = source.split('\n')
@@ -260,79 +280,184 @@ class NotebookExporter:
         
         return source
     
+    def _portable_function_definition(self, func, node_name):
+        """Call package functions in their module to preserve helper dependencies."""
+        module = getattr(func, '__module__', '')
+        name = getattr(func, '__name__', '')
+        resolved = getattr(importlib.import_module(module), name, None) if module.startswith('pyautocausal.') else None
+        if isinstance(resolved, TransformableFunction):
+            resolved = resolved.get_function()
+        if resolved is func and name.isidentifier():
+            self.needed_imports.add(f"from {module} import {name} as _{node_name}_implementation")
+            return (f"def {node_name}_function(**kwargs):\n"
+                    f"    return _{node_name}_implementation(**kwargs)")
+        return None
+
     def _get_function_name_from_string(self, function_string: str) -> str:
         """Get the function name from a string."""
         return function_string.split('def')[1].split('(')[0].strip()
     
     
-    def _find_argument_source_nodes(self, current_node: Node) -> Dict[str, str]:
+    def _predecessor_output_expressions(self, node: Node) -> Dict[str, str]:
+        """Resolve forwarded values and edge bindings as execution does.
+
+        Decisions have no notebook output variable. Recursing through their
+        inputs preserves both the original value expressions and every binding
+        applied before and after the decision.
         """
-        Traces backwards from a node to find the non-decision-node ancestors
-        that provide data. Effectively finds the origins of data flowing into
-        the current_node, ignoring intermediate DecisionNodes.
-
-        Args:
-            current_node: The node to start tracing backwards from.
-
-        Returns:
-            A dictionary mapping the names of ancestor source node names to the nodes 
-            (e.g., {'df': Node, 'settings': Node}).
-            This indicates which data sources are potentially available.
-        """
-        source_nodes = {}
-        visited = set()
-        queue = list(self.graph.predecessors(current_node)) # Use list for queue behavior
-
-        while queue:
-            predecessor = queue.pop(0) # FIFO
-
-            if predecessor in visited:
+        available = {}
+        for predecessor in self.graph.predecessors(node):
+            if not predecessor.is_completed():
                 continue
-            visited.add(predecessor)
-
             if isinstance(predecessor, DecisionNode):
-                # If it's a decision node, add its predecessors to the queue
-                # to continue tracing backwards *through* it.
-                for decision_predecessor in self.graph.predecessors(predecessor):
-                    if decision_predecessor not in visited:
-                        queue.append(decision_predecessor)
+                outputs = self._predecessor_output_expressions(predecessor)
             else:
-                # If it's a regular node or an input node, it's a source.
-                # We store its name as an available data source.
-                source_nodes[predecessor.name] = predecessor
+                outputs = {predecessor.name: f"{predecessor.name}_output"}
+            edge = self.graph.edges[predecessor, node]
+            bindings = edge.get('argument_names')
+            if bindings:
+                if len(outputs) != 1:
+                    raise ValueError(f"Bound predecessor '{predecessor.name}' must provide exactly one value")
+                expression = next(iter(outputs.values()))
+                outputs = {argument: expression for argument in bindings}
+            else:
+                aliases = edge.get('output_aliases', {})
+                outputs = {aliases.get(name, name): expression for name, expression in outputs.items()}
+            available.update(outputs)
+        return available
 
-        return source_nodes
+    def _context_value_expression(self, value: Any) -> str:
+        """Create a typed expression without pickling or flattening objects.
+
+        Scientific scalar/array types and ordinary containers have explicit
+        constructors. Unsupported objects must be supplied as notebook inputs
+        instead of silently becoming JSON dictionaries or strings.
+        """
+        import datetime
+        import math
+        import numpy as np
+        import pandas as pd
+        from zoneinfo import ZoneInfo
+
+        if value is None or type(value) in (str, bytes, bool, int):
+            return repr(value)
+        if type(value) in (float, complex):
+            components = (value.real, value.imag) if isinstance(value, complex) else (value,)
+            if not all(math.isfinite(component) for component in components):
+                raise ValueError("Non-finite run-context numbers are not supported")
+            return repr(value)
+        if value is pd.NA or value is pd.NaT:
+            self.needed_imports.add("import pandas as _pac_pandas")
+            return "_pac_pandas.NA" if value is pd.NA else "_pac_pandas.NaT"
+        if isinstance(value, (pd.Timestamp, pd.Timedelta)):
+            self.needed_imports.add("import pandas as _pac_pandas")
+            if isinstance(value, pd.Timestamp):
+                timezone = self._context_value_expression(value.tz)
+                # Integer ticks preserve the original timestamp resolution.
+                ticks = int(value.asm8.view('i8'))
+                unit = np.datetime_data(value.asm8.dtype)[0]
+                return f"_pac_pandas.Timestamp({ticks}, unit={unit!r}, tz={timezone})"
+            ticks = int(value.asm8.view('i8'))
+            unit = np.datetime_data(value.asm8.dtype)[0]
+            return f"_pac_pandas.Timedelta({ticks}, unit={unit!r})"
+        if isinstance(value, ZoneInfo):
+            self.needed_imports.add("import zoneinfo as _pac_zoneinfo")
+            return f"_pac_zoneinfo.ZoneInfo({value.key!r})"
+        if isinstance(value, datetime.timezone):
+            self.needed_imports.add("import datetime as _pac_datetime")
+            offset = self._context_value_expression(value.utcoffset(None))
+            return f"_pac_datetime.timezone({offset}, {value.tzname(None)!r})"
+        # Older pandas versions can retain a pytz timezone. Resolve its named
+        # zone explicitly, rather than replacing it with a fixed UTC offset.
+        if isinstance(value, datetime.tzinfo) and type(value).__module__.startswith('pytz'):
+            self.needed_imports.add("import pytz as _pac_pytz")
+            if getattr(value, 'zone', None) is None:
+                raise TypeError(f"Unsupported run-context timezone: {type(value).__name__}")
+            return f"_pac_pytz.timezone({value.zone!r})"
+        if type(value) is datetime.datetime:
+            self.needed_imports.add("import datetime as _pac_datetime")
+            timezone = self._context_value_expression(value.tzinfo)
+            if value.tzinfo is not None and value.utcoffset() is not None:
+                # Attaching a pytz zone directly gives its historical LMT offset.
+                # Rebuild the known UTC instant and convert to the named zone;
+                # this also preserves the selected side of an ambiguous hour.
+                utc = value.astimezone(datetime.timezone.utc)
+                round_trip = utc.astimezone(value.tzinfo)
+                if (round_trip.replace(tzinfo=None) != value.replace(tzinfo=None)
+                        or round_trip.utcoffset() != value.utcoffset()):
+                    raise ValueError(
+                        "Nonexistent or inconsistent local datetime cannot be replayed; "
+                        "normalize it through UTC before using it as run context"
+                    )
+                parts = (utc.year, utc.month, utc.day, utc.hour, utc.minute,
+                         utc.second, utc.microsecond)
+                return (f"_pac_datetime.datetime({', '.join(map(str, parts))}, "
+                        f"tzinfo=_pac_datetime.timezone.utc).astimezone({timezone})"
+                        f".replace(fold={value.fold})")
+            parts = (value.year, value.month, value.day, value.hour, value.minute,
+                     value.second, value.microsecond)
+            return (f"_pac_datetime.datetime({', '.join(map(str, parts))}, "
+                    f"tzinfo={timezone}, fold={value.fold})")
+        if type(value) is datetime.date:
+            self.needed_imports.add("import datetime as _pac_datetime")
+            return f"_pac_datetime.date({value.year}, {value.month}, {value.day})"
+        if type(value) is datetime.timedelta:
+            self.needed_imports.add("import datetime as _pac_datetime")
+            return (f"_pac_datetime.timedelta(days={value.days}, seconds={value.seconds}, "
+                    f"microseconds={value.microseconds})")
+        if type(value) is np.ndarray or isinstance(value, np.generic):
+            array = np.asarray(value)
+            if (array.dtype.hasobject or array.dtype.fields is not None
+                    or (array.dtype.kind == 'f' and array.dtype.itemsize > 8)
+                    or (array.dtype.kind == 'c' and array.dtype.itemsize > 16)):
+                raise TypeError(f"Unsupported run-context NumPy dtype: {array.dtype}")
+            self.needed_imports.add("import numpy as _pac_numpy")
+            # NumPy tolist converts ns timestamps into integers but other
+            # resolutions into dates. Use labeled integer ticks consistently.
+            values = (array.astype('int64') if array.dtype.kind in 'mM' else array).ravel().tolist()
+            contents = self._context_value_expression(values)
+            expression = (f"_pac_numpy.array({contents}, dtype={array.dtype.str!r})"
+                          f".reshape({array.shape!r})")
+            return expression + "[()]" if isinstance(value, np.generic) else expression
+        if type(value) is tuple:
+            contents = ', '.join(self._context_value_expression(item) for item in value)
+            return '(' + contents + (',' if len(value) == 1 else '') + ')'
+        if type(value) is list:
+            return '[' + ', '.join(self._context_value_expression(item) for item in value) + ']'
+        if type(value) is dict:
+            return '{' + ', '.join(f"{self._context_value_expression(key)}: "
+                                   f"{self._context_value_expression(item)}"
+                                   for key, item in value.items()) + '}'
+        raise TypeError(f"Unsupported run-context type: {type(value).__name__}; "
+                        "supply this value as a notebook input")
 
     def _resolve_function_arguments(self, node: Node, func: Callable) -> Dict[str, str]:
-        """Resolve the arguments for a node's function."""
+        """Mirror runtime argument binding for the executed path and context."""
+        available = self._predecessor_output_expressions(node)
+        # Resolve defaults/context using the same routine as node execution.
+        # Context values become literal expressions; unavailable arbitrary
+        # objects fail explicitly instead of producing an unexecutable repr.
+        original_context = self.graph.run_context
+        exporter = self
 
-        is_wrapper = self._is_exposed_wrapper(func)
-        
-        arguments = dict()  
-        #TODO: Handle default arguments for non-wrapper functions
-        
+        class ContextExpressions:
+            def __getattr__(self, key):
+                value = getattr(original_context, key)
+                try:
+                    return exporter._context_value_expression(value)
+                except (TypeError, ValueError) as error:
+                    raise ValueError(f"Cannot export run-context value '{key}': {error}") from error
 
-        # For wrapper functions, use the argument mapping to map the arguments to the predecessor node names
-        if is_wrapper:
-            target_func, arg_mapping = self._get_exposed_target_info(func)
-            for predecessor_name, func_param in arg_mapping.items():
-                arguments[func_param] = f"{predecessor_name}_output"
-        else:
-            arg_mapping = dict()
-
-        # Get predecessor nodes that provide data, ignoring decision nodes in between
-        arg_source_nodes = self._find_argument_source_nodes(node)        
-
-        # Handle the arguments that are not transformed
-        for arg_name, _ in arg_source_nodes.items():
-            if arg_name not in arg_mapping:
-                arguments[arg_name] = f"{arg_name}_output"
-
-        #TODO: Add check that all required arguments are present and all provided arguments are part of arguments
-        #TODO: Handle run-context arguments
-
+        try:
+            self.graph.run_context = ContextExpressions() if original_context is not None else None
+            arguments = node._resolve_function_arguments(func, available)
+        finally:
+            self.graph.run_context = original_context
+        if self._is_exposed_wrapper(func):
+            _, mapping = self._get_exposed_target_info(func)
+            arguments = {mapping.get(key, key): value for key, value in arguments.items()}
         return arguments
-    
+
     def _format_function_execution(self, node: Node, function_string: str) -> str:
         """Format the function execution statement."""
         if isinstance(node, InputNode):
@@ -393,7 +518,11 @@ class NotebookExporter:
     
         if not isinstance(node, InputNode):
             func_def = self._format_function_definition(node)
-            self.nb.cells.append(new_code_cell(func_def))
+            implementation = new_code_cell(func_def)
+            if self.compact:
+                implementation.metadata['jupyter'] = {'source_hidden': True}
+                implementation.metadata['tags'] = ['implementation', 'hide-input']
+            self.nb.cells.append(implementation)
         
             exec_code = self._format_function_execution(node, func_def)
             self.nb.cells.append(new_code_cell(exec_code))
@@ -448,7 +577,7 @@ class NotebookExporter:
             if pattern in loading_function:
                 self.needed_imports.add(import_stmt)
 
-    def export_notebook(self, filepath: str, data_path: Optional[str] = None, loading_function: Optional[str] = None) -> None:
+    def export_notebook(self, filepath: str, data_path: Optional[str] = None, loading_function: Optional[str] = None, compact: bool = False) -> None:
         """
         Export the graph execution as a Jupyter notebook.
         
@@ -456,7 +585,18 @@ class NotebookExporter:
             filepath: Path where the notebook should be saved
             data_path: Optional path to data file to load
             loading_function: Optional function string to load the data (e.g., 'pd.read_csv')
+            compact: Mark implementation cells as collapsed without removing code or diagnostics
         """
+        if data_path is not None and loading_function is not None:
+            completed_inputs = [node.name for node in self.graph.nodes
+                                if isinstance(node, InputNode) and node.is_completed()]
+            if len(completed_inputs) > 1:
+                raise ValueError(
+                    "A single data_path/loading_function cannot replay multiple inputs: "
+                    f"{completed_inputs}. Export without a loader and fill each input "
+                    "cell with its own data."
+                )
+        self.compact = compact
         # Reset notebook and imports to ensure clean state
         self.nb = new_notebook()
         self.needed_imports = set()
@@ -501,10 +641,19 @@ class NotebookExporter:
             
             # Always load data directly into input_data (to match test expectations)
             data_loading_code = f"""# Load input data
-input_data = {loading_function}('{data_path}')"""
+input_data = {loading_function}({data_path!r})"""
             
             self.nb.cells.insert(data_loading_position, new_code_cell(data_loading_code))
         
+        report = self.graph.execution_report()
+        self.nb.metadata['pyautocausal'] = report
+        self.nb.cells.append(new_markdown_cell(
+            "## Execution diagnostics and provenance\n\n"
+            "This notebook replays the completed path from the original run. "
+            "Changed input data may require running the original graph to select a new path.\n\n"
+            "```json\n" + json.dumps(report, indent=2) + "\n```"
+        ))
+
         # Save the notebook
         with open(filepath, 'w', encoding='utf-8') as f:
             nbformat.write(self.nb, f)
@@ -516,7 +665,8 @@ input_data = {loading_function}('{data_path}')"""
         data_path: Optional[str] = None,
         loading_function: Optional[str] = None,
         timeout: int = 600,
-        kernel_name: str = "python3"
+        kernel_name: Optional[str] = None,
+        compact: bool = False
     ) -> Path:
         """
         Export the graph as a notebook, execute it, and convert to HTML.
@@ -529,8 +679,9 @@ input_data = {loading_function}('{data_path}')"""
             html_filepath: Path for the output HTML file. If None, uses same name as notebook with .html extension
             data_path: Optional path to data file to load
             loading_function: Optional function string to load the data (e.g., 'pd.read_csv')
+            compact: Mark implementation cells as collapsed without removing code or diagnostics
             timeout: Maximum time in seconds to wait for each cell execution (default: 600)
-            kernel_name: Name of the Jupyter kernel to use for execution (default: "python3")
+            kernel_name: Explicit Jupyter kernel name, or None for the current Python interpreter
             
         Returns:
             Path object pointing to the generated HTML file
@@ -541,7 +692,7 @@ input_data = {loading_function}('{data_path}')"""
         notebook_filepath = Path(notebook_filepath)
         
         # Export the notebook first
-        self.export_notebook(str(notebook_filepath), data_path, loading_function)
+        self.export_notebook(str(notebook_filepath), data_path, loading_function, compact=compact)
         
         # Set HTML output path if not provided
         if html_filepath is None:
@@ -563,7 +714,7 @@ input_data = {loading_function}('{data_path}')"""
         notebook_filepath: str | Path,
         html_filepath: Optional[str | Path] = None,
         timeout: int = 600,
-        kernel_name: str = "python3"
+        kernel_name: Optional[str] = None
     ) -> Path:
         """
         Execute an existing notebook and convert to HTML.
@@ -575,7 +726,7 @@ input_data = {loading_function}('{data_path}')"""
             notebook_filepath: Path to the existing notebook file
             html_filepath: Path for the output HTML file. If None, uses same name as notebook with .html extension
             timeout: Maximum time in seconds to wait for each cell execution (default: 600)
-            kernel_name: Name of the Jupyter kernel to use for execution (default: "python3")
+            kernel_name: Explicit Jupyter kernel name, or None for the current Python interpreter
             
         Returns:
             Path object pointing to the generated HTML file
@@ -602,4 +753,4 @@ input_data = {loading_function}('{data_path}')"""
             timeout=timeout,
             kernel_name=kernel_name,
             working_directory=notebook_filepath.parent
-        ) 
+        )

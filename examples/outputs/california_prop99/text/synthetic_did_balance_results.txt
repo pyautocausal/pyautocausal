@@ -1,15 +1,2 @@
-================================================================================
 BALANCE TEST RESULTS
-================================================================================
-
-Variable        Treated    Control    Difference   Std. Err.  t-stat   p-value 
---------------------------------------------------------------------------------
-lnincome        10.142     -999.000   1009.142     nan        nan      nan     
-beer            23.600     -999.000   1022.600     nan        nan      nan     
-age15to24       0.158      -999.000   999.158      nan        nan      nan     
-retprice        117.400    281.503    -164.103     nan        nan      nan     
-
-Notes:
-- Difference = Treated Mean - Control Mean
-- Tests use Welch's t-test (unequal variances)
-================================================================================
+Covariate balance unavailable. No control covariates were specified; covariate balance cannot be assessed.

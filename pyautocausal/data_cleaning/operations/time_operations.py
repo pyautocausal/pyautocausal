@@ -2,6 +2,7 @@
 
 from typing import Tuple
 import pandas as pd
+import numpy as np
 from datetime import datetime
 
 from ..base import CleaningOperation, TransformationRecord
@@ -43,13 +44,25 @@ class StandardizeTimePeriodsOperation(CleaningOperation):
                            f"Sample column values: {time_column.unique()[:3].tolist()}, "
                            f"Sample mapping keys: {list(hint.value_mapping.keys())[:3]}")
         
-        # Apply the mapping directly and ensure integer result
+        unmapped = time_column.notna() & ~values_in_mapping
+        if unmapped.any():
+            raise ValueError(f"Unmapped values in time column '{hint.time_column}': {time_column[unmapped].tolist()[:5]}")
+        if len(set(hint.value_mapping.values())) != len(hint.value_mapping):
+            raise ValueError("Time standardization mapping must be one-to-one")
         mapped_values = time_column.map(hint.value_mapping)
-        df_cleaned[hint.time_column] = mapped_values.fillna(df_cleaned[hint.time_column])
-        
-        # Ensure the result is integer type
-        df_cleaned[hint.time_column] = df_cleaned[hint.time_column].astype('int64')
-        
+        # Keep missing periods missing until the configured missing-data operation.
+        dtype = "Int64" if mapped_values.isna().any() else "int64"
+        df_cleaned[hint.time_column] = mapped_values.astype(dtype)
+
+        def source_value(value):
+            if isinstance(value, str):
+                return value
+            if isinstance(value, pd.Timestamp) or hasattr(value, 'isoformat'):
+                return value.isoformat()
+            if isinstance(value, np.datetime64):
+                return pd.Timestamp(value).isoformat()
+            return value.item() if hasattr(value, 'item') else value
+
         # Create transformation record
         record = TransformationRecord(
             operation_name=self.name,
@@ -62,7 +75,12 @@ class StandardizeTimePeriodsOperation(CleaningOperation):
                 "standardized_range": [min(hint.value_mapping.values()), max(hint.value_mapping.values())],
                 "pre_treatment_periods": hint.metadata.get("pre_treatment_periods", 0),
                 "post_treatment_periods": hint.metadata.get("post_treatment_periods", 0),
-                "sample_mapping": dict(list(hint.value_mapping.items())[:5])  # First 5 for logging
+                "original_dtype": str(time_column.dtype),
+                "treatment_start_period": hint.metadata.get("treatment_start_period"),
+                "value_mapping": [
+                    {"original": source_value(value), "original_type": type(value).__name__, "standardized": int(period)}
+                    for value, period in hint.value_mapping.items()
+                ]
             }
         )
         

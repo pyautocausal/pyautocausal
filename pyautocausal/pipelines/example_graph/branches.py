@@ -61,6 +61,13 @@ from pyautocausal.pipelines.library.conditions import has_binary_treatment_and_o
 from pyautocausal.pipelines.library.conditions import has_sufficient_never_treated_units
 
 
+def _require_nodes(graph, names, branch):
+    missing = [name for name in names if name not in graph._nodes_by_name]
+    if missing:
+        raise ValueError(f"Cannot create {branch}: missing prerequisite nodes {missing}. "
+                         "Create the shared cleaning and decision structure first.")
+
+
 def _add_balance_tests_to_spec(graph: ExecutableGraph, spec_node: str, spec_name: str) -> str:
     """
     Add balance test nodes after a specification node.
@@ -117,6 +124,7 @@ def create_cross_sectional_branch(graph: ExecutableGraph) -> None:
     
     This branch handles single-period data using OLS regression.
     """
+    _require_nodes(graph, ['cross_sectional_cleaned_data'], 'create_cross_sectional_branch')
     graph.create_node(
         'stand_spec', 
         action_function=create_cross_sectional_specification.transform({'cross_sectional_cleaned_data': 'data'}), 
@@ -149,6 +157,7 @@ def create_synthetic_did_branch(graph: ExecutableGraph) -> None:
     
     This branch handles panel data with a single treated unit using synthetic controls.
     """
+    _require_nodes(graph, ['single_treated_unit'], 'create_synthetic_did_branch')
     graph.create_node(
         'synthdid_spec', 
         action_function=create_synthdid_specification.transform({'panel_cleaned_data': 'data'}), 
@@ -182,6 +191,7 @@ def create_hainmueller_synth_branch(graph: ExecutableGraph) -> None:
     This branch handles panel data with a single treated unit using Hainmueller synthetic controls
     with in-space placebo tests.
     """
+    _require_nodes(graph, ['synthdid_spec'], 'create_hainmueller_synth_branch')
     # Hainmueller Synthetic Control specification (reuses synthdid_spec)
     graph.create_node(
         'hainmueller_fit', 
@@ -234,6 +244,7 @@ def create_did_branch(graph: ExecutableGraph) -> None:
     This branch handles panel data with insufficient periods for event studies,
     using simple difference-in-differences.
     """
+    _require_nodes(graph, ['multi_post_periods'], 'create_did_branch')
     graph.create_node(
         'did_spec', 
         action_function=create_did_specification.transform({'multi_post_periods': 'data'}), 
@@ -266,6 +277,7 @@ def create_event_study_branch(graph: ExecutableGraph) -> None:
     This branch handles panel data with sufficient periods for dynamic treatment effects,
     but without staggered treatment timing.
     """
+    _require_nodes(graph, ['stag_treat'], 'create_event_study_branch')
     graph.create_node(
         'event_spec', 
         action_function=create_event_study_specification.transform({'panel_cleaned_data': 'data'}), 
@@ -310,6 +322,7 @@ def create_staggered_did_branch(graph: ExecutableGraph) -> None:
     This branch handles panel data with staggered treatment timing, using both
     traditional event studies and modern Callaway & Sant'Anna methods.
     """
+    _require_nodes(graph, ['stag_treat'], 'create_staggered_did_branch')
     # Traditional staggered DiD specification and analysis
     graph.create_node(
         'stag_spec', 
@@ -434,6 +447,7 @@ def create_uplift_branch(graph: ExecutableGraph) -> None:
     - X-learner: Enhanced T-learner with cross-fitting
     - Double ML: Doubly robust estimation with cross-fitting
     """
+    _require_nodes(graph, ['binary_treatment_outcome'], 'create_uplift_branch')
     
     # Uplift specification (single shared input)
     graph.create_node(
@@ -540,13 +554,4 @@ def create_uplift_branch(graph: ExecutableGraph) -> None:
         save_node=True,
         predecessors=["double_ml_fit"]
     )
-    graph.create_node(
-        'double_ml_plot',
-        action_function=uplift_curve_plot_adaptive.transform({'double_ml_fit': 'spec'}),
-        output_config=OutputConfig(
-            output_filename='plots/double_ml_curve', 
-            output_type=OutputType.PNG
-        ),
-        save_node=True,
-        predecessors=["double_ml_fit"]
-    )
+    # Double ML estimates an average effect only; it has no CATE ranking to plot.

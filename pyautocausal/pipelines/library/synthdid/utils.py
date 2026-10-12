@@ -114,10 +114,10 @@ def pairwise_sum_decreasing(x: np.ndarray, y: np.ndarray) -> np.ndarray:
 
 
 def panel_matrices(panel: pd.DataFrame, 
-                  unit: Union[int, str] = 1, 
-                  time: Union[int, str] = 2, 
-                  outcome: Union[int, str] = 3, 
-                  treatment: Union[int, str] = 4, 
+                  unit: Union[int, str] = 0,
+                  time: Union[int, str] = 1,
+                  outcome: Union[int, str] = 2,
+                  treatment: Union[int, str] = 3,
                   treated_last: bool = True) -> Dict[str, Any]:
     """
     Convert a long (balanced) panel to a wide matrix format required by synthdid estimators.
@@ -126,13 +126,13 @@ def panel_matrices(panel: pd.DataFrame,
     -----------
     panel : pd.DataFrame
         A data frame with columns for units, time, outcome, and treatment indicator
-    unit : Union[int, str], default=1
+    unit : Union[int, str], default=0
         The column number/name corresponding to the unit identifier
-    time : Union[int, str], default=2
+    time : Union[int, str], default=1
         The column number/name corresponding to the time identifier
-    outcome : Union[int, str], default=3
+    outcome : Union[int, str], default=2
         The column number/name corresponding to the outcome identifier
-    treatment : Union[int, str], default=4
+    treatment : Union[int, str], default=3
         The column number/name corresponding to the treatment status
     treated_last : bool, default=True
         Should we sort the rows of Y and W so treated units are last
@@ -172,54 +172,33 @@ def panel_matrices(panel: pd.DataFrame,
     if not all(val in [0, 1] for val in panel_subset[treatment_col].unique()):
         raise ValueError("The treatment status should be in 0 or 1.")
     
-    # Convert potential factor/date columns to character
-    for col in panel_subset.columns:
-        if pd.api.types.is_categorical_dtype(panel_subset[col]) or isinstance(panel_subset[col].iloc[0], pd.Timestamp):
-            panel_subset[col] = panel_subset[col].astype(str)
-    
-    # Check if panel is balanced
-    unit_time_counts = panel_subset.groupby([unit_col, time_col]).size()
-    if not all(unit_time_counts == 1):
-        raise ValueError("Input `panel` must be a balanced panel: it must have an observation for every unit at every time.")
-    
-    # Sort by unit and time
-    panel_subset = panel_subset.sort_values([unit_col, time_col])
-    
-    # Get unique units and time periods
-    unique_units = panel_subset[unit_col].unique()
-    unique_times = panel_subset[time_col].unique()
-    
-    num_units = len(unique_units)
-    num_years = len(unique_times)
-    
-    # Create Y matrix (outcome)
-    Y = np.zeros((num_units, num_years))
-    for i, unit_val in enumerate(unique_units):
-        for j, time_val in enumerate(unique_times):
-            mask = (panel_subset[unit_col] == unit_val) & (panel_subset[time_col] == time_val)
-            Y[i, j] = panel_subset.loc[mask, outcome_col].values[0]
-    
-    # Create W matrix (treatment)
-    W = np.zeros((num_units, num_years))
-    for i, unit_val in enumerate(unique_units):
-        for j, time_val in enumerate(unique_times):
-            mask = (panel_subset[unit_col] == unit_val) & (panel_subset[time_col] == time_val)
-            W[i, j] = panel_subset.loc[mask, treatment_col].values[0]
-    
-    # Determine treated units and pre-treatment period
-    w = np.any(W == 1, axis=1)  # indicator for units that are treated at any time
-    T0 = np.where(np.any(W == 1, axis=0))[0][0] - 1  # last period nobody is treated
-    N0 = np.sum(~w)
-    
-    # Check for simultaneous adoption
-    if not (np.all(W[~w, :] == 0) and np.all(W[:, :T0+1] == 0) and np.all(W[w, T0+1:] == 1)):
-        raise ValueError("The package cannot use this data. Treatment adoption is not simultaneous.")
-    
-    # Sort units if needed
-    if treated_last:
-        unit_order = np.lexsort((unique_units, W[:, T0+1]))
-    else:
-        unit_order = np.arange(num_units)
+    # A balanced panel requires every cell once, not merely no duplicates.
+    if panel_subset.duplicated([unit_col, time_col]).any():
+        raise ValueError("Input panel must have exactly one observation per unit and time")
+    unique_units = np.sort(panel_subset[unit_col].unique())
+    unique_times = np.sort(panel_subset[time_col].unique())
+    num_units, num_years = len(unique_units), len(unique_times)
+    if len(panel_subset) != num_units * num_years:
+        raise ValueError("Input panel must be balanced: an observation is required for every unit at every time")
+    Y = panel_subset.pivot(index=unit_col, columns=time_col, values=outcome_col).reindex(
+        index=unique_units, columns=unique_times).to_numpy(dtype=float)
+    W = panel_subset.pivot(index=unit_col, columns=time_col, values=treatment_col).reindex(
+        index=unique_units, columns=unique_times).to_numpy(dtype=float)
+    if not np.isfinite(Y).all():
+        raise ValueError("Panel outcomes must be finite numeric values")
+    w = np.any(W == 1, axis=1)
+    N0 = int(np.sum(~w))
+    if N0 == 0 or N0 == num_units:
+        raise ValueError("Synthetic DiD requires both never-treated donors and treated units")
+    # T0 is a COUNT: columns [:T0] are pre, columns [T0:] are post.
+    T0 = int(np.flatnonzero(np.any(W == 1, axis=0))[0])
+    if T0 == 0:
+        raise ValueError("Synthetic DiD requires at least one pre-treatment period")
+    if not (np.all(W[:, :T0] == 0) and np.all(W[w, T0:] == 1)):
+        raise ValueError("Treatment adoption must be simultaneous and permanent")
+    unit_order = np.argsort(w, kind='stable') if treated_last else np.arange(num_units)
+    if not treated_last and (w[:N0].any() or not w[N0:].all()):
+        raise ValueError("Controls must precede treated units when treated_last=False")
     
     # Create row and column names
     Y_with_names = pd.DataFrame(Y[unit_order, :], index=unique_units[unit_order], columns=unique_times)
@@ -314,4 +293,4 @@ def random_low_rank(n_0: int = 100,
         'T0': T_0,
         'Y_df': Y_df,
         'L_df': L_df
-    } 
+    }

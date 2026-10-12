@@ -124,9 +124,11 @@ class Plot(object):
             ax.plot(time ,data.treated_outcome_all, 'b-', label=treated_label)
             ax.axvline(data.treatment_period-1, linestyle=':', color="gray")
             ax.set_ylim(-1.2*abs(min_value), 1.2*abs(max_value)) #Do abs() in case min is positive, or max is negative
-            ax.annotate(treatment_label, 
+            pre_outcome = np.asarray(data.treated_outcome).reshape(-1)
+            annotation_y = float(pre_outcome[-1] * (1 + 0.2*np.sign(pre_outcome[-1] - pre_outcome[0])))
+            ax.annotate(treatment_label,
                 #Put label below outcome if pre-treatment trajectory is decreasing, else above
-                xy=(data.treatment_period-1, data.treated_outcome[-1]*(1 + 0.2*np.sign(data.treated_outcome[-1] - data.treated_outcome[0]))),
+                xy=(data.treatment_period-1, annotation_y),
                 xytext=(-160, -4),
                 xycoords='data',
                 textcoords='offset points',
@@ -152,7 +154,7 @@ class Plot(object):
             ax.axvline(data.treatment_period-1, linestyle=':', color="gray")
             ax.set_ylim(-1.2*most_extreme_value, 1.2*most_extreme_value)
             ax.annotate(treatment_label, 
-                xy=(data.treatment_period-1, 0.5*most_extreme_value),
+                xy=(data.treatment_period-1, float(0.5*most_extreme_value)),
                 xycoords='data',
                 xytext=(-160, -4),
                 textcoords='offset points',
@@ -167,6 +169,8 @@ class Plot(object):
 
         if 'cumulative' in panels:
             ax = plt.subplot(n_panels, 1, idx, sharex=ax)
+            # Compute directly so this panel can also be plotted on its own.
+            normalized_treated_outcome = data.treated_outcome_all - synth.T
             #Compute cumulative treatment effect as cumulative sum of pointwise effects
             cumulative_effect = np.cumsum(normalized_treated_outcome[data.periods_pre_treatment:])
             cummulative_treated_outcome = np.concatenate((np.zeros(data.periods_pre_treatment), cumulative_effect), axis=None)
@@ -178,7 +182,7 @@ class Plot(object):
             ax.axvline(data.treatment_period-1, linestyle=':', color="gray")
             #ax.set_ylim(-1.1*most_extreme_value, 1.1*most_extreme_value)
             ax.annotate(treatment_label, 
-                xy=(data.treatment_period-1, cummulative_treated_outcome[-1]*0.3),
+                xy=(data.treatment_period-1, float(cummulative_treated_outcome[-1]*0.3)),
                 xycoords='data',
                 xytext=(-160, -4),
                 textcoords='offset points',
@@ -259,8 +263,9 @@ class Plot(object):
             ax.plot(time, data.treated_outcome_all, 'b-', label=treated_label)
 
             ax.axvline(data.placebo_treatment_period, linestyle=':', color="gray")
-            ax.annotate('Placebo Treatment', 
-                xy=(data.placebo_treatment_period, data.treated_outcome_all[data.placebo_periods_pre_treatment]*1.2),
+            placebo_y = float(np.asarray(data.treated_outcome_all).reshape(-1)[data.placebo_periods_pre_treatment]*1.2)
+            ax.annotate('Placebo Treatment',
+                xy=(data.placebo_treatment_period, placebo_y),
                 xytext=(-160, -4),
                 xycoords='data',
                 textcoords='offset points',

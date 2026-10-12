@@ -5,7 +5,7 @@ import pandas as pd
 
 from pyautocausal.pipelines.library.csdid.utils.bmisc import multiplier_bootstrap
 
-def mboot(inf_func, DIDparams, pl=False, cores=1):
+def mboot(inf_func, DIDparams, pl=False, cores=1, rng=None):
     # Setup needed variables
     data            = DIDparams['data'] 
     idname          = DIDparams['idname']
@@ -53,13 +53,13 @@ def mboot(inf_func, DIDparams, pl=False, cores=1):
     # Multiplier bootstrap
     n_clusters = n
     if not clustervars:
-        bres = np.sqrt(n) * run_multiplier_bootstrap(inf_func, biters, pl, cores)
+        bres = np.sqrt(n) * run_multiplier_bootstrap(inf_func, biters, pl, cores, rng=rng)
     else:
         n_clusters = len(data[clustervars].drop_duplicates())
         cluster = dta[[idname, clustervars]].drop_duplicates().values[:, 1]
         cluster_n = dta.groupby(cluster).size().values
         cluster_mean_if = pd.DataFrame(inf_func).groupby(cluster).sum().values / cluster_n
-        bres = np.sqrt(n_clusters) * run_multiplier_bootstrap(cluster_mean_if, biters, pl, cores)
+        bres = np.sqrt(n_clusters) * run_multiplier_bootstrap(cluster_mean_if, biters, pl, cores, rng=rng)
 
     # Handle vector and matrix case differently to get nxk matrix
     if isinstance(bres, np.ndarray) and bres.ndim == 1:
@@ -68,8 +68,20 @@ def mboot(inf_func, DIDparams, pl=False, cores=1):
         bres = bres.transpose()
 
     # Non-degenerate dimensions
-    ndg_dim = np.logical_and(~np.isnan(np.sum(bres, axis=0)), np.sum(bres ** 2, axis=0) > np.sqrt(np.finfo(float).eps) * 10)
+    ndg_dim = np.logical_and(np.isfinite(bres).all(axis=0), np.sum(bres ** 2, axis=0) > np.sqrt(np.finfo(float).eps) * 10)
     bres = bres[:, ndg_dim]
+
+    # As in the R did::mboot convention, degenerate dimensions have missing
+    # standard errors. A zero empirical influence function does not support a
+    # studentized confidence band; retain the ATT without claiming certainty.
+    # https://github.com/bcallaway11/did/blob/master/R/mboot.R
+    if not ndg_dim.any():
+        return {'bres': bres, 'V': np.empty((0, 0)),
+                'se': np.full(ndg_dim.shape, np.nan), 'crit_val': np.nan,
+                'inference': {
+                    'status': 'unavailable',
+                    'reason': 'All multiplier-bootstrap dimensions are degenerate or non-finite; confidence intervals are unavailable.',
+                }}
 
     # Bootstrap variance matrix (this matrix can be defective because of degenerate cases)
     V = np.cov(bres, rowvar=False)
@@ -82,34 +94,44 @@ def mboot(inf_func, DIDparams, pl=False, cores=1):
     bSigma = (quantile_75 - quantile_25) / (qnorm_75 - qnorm_25)
         
     # Critical value for uniform confidence band
-    bT = np.max(np.abs(bres / bSigma), axis=1)
+    positive_scale = np.isfinite(bSigma) & (bSigma > 0)
+    bT = (np.max(np.abs(bres[:, positive_scale] / bSigma[positive_scale]), axis=1)
+          if positive_scale.any() else np.empty(0))
     bT = bT[np.isfinite(bT)]
-    crit_val = np.quantile(bT, 1 - alp, method="inverted_cdf")
+    crit_val = (np.quantile(bT, 1 - alp, method="inverted_cdf")
+                if bT.size else np.nan)
     
     # Standard error
     se = np.full(ndg_dim.shape, np.nan)
-    se[ndg_dim] = bSigma / np.sqrt(n_clusters)
+    se[ndg_dim] = np.where(positive_scale, bSigma / np.sqrt(n_clusters), np.nan)
 
-    return {'bres': bres, 'V': V, 'se': se, 'crit_val': crit_val}
+    available = np.isfinite(se)
+    inference = {'status': ('asymptotic' if available.all() else
+                            'partial' if available.any() else 'unavailable')}
+    if not available.all():
+        inference['reason'] = 'Degenerate or non-finite multiplier-bootstrap dimensions have unavailable confidence intervals.'
+    return {'bres': bres, 'V': V, 'se': se, 'crit_val': crit_val,
+            'inference': inference}
 
-def run_multiplier_bootstrap(inf_func, biters, pl=False, cores=1):
+def run_multiplier_bootstrap(inf_func, biters, pl=False, cores=1, rng=None):
+    rng = np.random.default_rng(rng)
     ngroups = int(np.ceil(biters / cores))
     chunks = [ngroups] * cores
     chunks[0] += biters - sum(chunks)
 
     n = inf_func.shape[0]
 
-    def parallel_function(biters):
-        return multiplier_bootstrap(inf_func, biters)
-
     if n > 2500 and pl and cores > 1:
+        # Each worker gets a separate reproducible stream, avoiding inherited
+        # or shared process-global NumPy state.
+        seeds = rng.integers(0, np.iinfo(np.int64).max, size=len(chunks))
         results = Parallel(n_jobs=cores)(
-            delayed(parallel_function)(biters) for biters in chunks
+            delayed(multiplier_bootstrap)(inf_func, count, rng=int(seed))
+            for count, seed in zip(chunks, seeds)
         )
         results = np.vstack(results)
     else:
-        results = multiplier_bootstrap(inf_func, biters)
+        results = multiplier_bootstrap(inf_func, biters, rng=rng)
 
     return results
-
 

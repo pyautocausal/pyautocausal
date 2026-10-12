@@ -21,6 +21,7 @@ class SynthDIDEstimate:
     setup: Dict[str, Any]
     opts: Dict[str, Any]
     estimator: str = "synthdid_estimate"
+    inference: Optional[Dict[str, Any]] = None
     
     def __float__(self):
         return float(self.estimate)
@@ -98,33 +99,62 @@ def synthdid_estimate(Y: np.ndarray,
     SynthDIDEstimate
         An object containing the average treatment effect estimate and other information.
     """
-    # Check inputs
-    if Y.shape[0] <= N0 or Y.shape[1] <= T0:
-        raise ValueError("Y must have more rows than N0 and more columns than T0")
-    
-    # Set up X if not provided
-    if X is None:
-        X = np.zeros((Y.shape[0], Y.shape[1], 0))
-    
-    # Check X dimensions
+    Y = np.asarray(Y, dtype=float)
+    if Y.ndim != 2 or not np.isfinite(Y).all():
+        raise ValueError("Y must be a finite two-dimensional numeric matrix")
+    if not isinstance(N0, (int, np.integer)) or not 0 < N0 < Y.shape[0]:
+        raise ValueError("N0 must leave at least one control and one treated unit")
+    if not isinstance(T0, (int, np.integer)) or not 0 < T0 < Y.shape[1]:
+        raise ValueError("T0 must leave at least one pre-treatment and one post-treatment period")
+    X = np.zeros((*Y.shape, 0)) if X is None else np.asarray(X, dtype=float)
     if X.ndim == 2:
-        X = X.reshape(X.shape[0], X.shape[1], 1)
-    
-    if X.shape[0] != Y.shape[0] or X.shape[1] != Y.shape[1]:
-        raise ValueError("X must have the same first two dimensions as Y")
-    
+        X = X[:, :, None]
+    if X.ndim != 3 or X.shape[:2] != Y.shape or not np.isfinite(X).all():
+        raise ValueError("X must be finite with the same first two dimensions as Y")
+    # Avoid changing an estimate's weights when they are reused for inference.
+    if weights is not None:
+        import copy
+        weights = copy.deepcopy(weights)
+        for key, count in [('omega', N0), ('lambda', T0)]:
+            if weights.get(key) is not None:
+                value = np.asarray(weights[key], dtype=float)
+                if value.shape != (count,) or not np.isfinite(value).all() or (value < 0).any():
+                    raise ValueError(f"Invalid {key} weights")
+                # SC deliberately uses a zero lambda vector.
+                if not (np.isclose(value.sum(), 1) or (key == 'lambda' and value.sum() == 0)):
+                    raise ValueError(f"{key} weights must sum to one")
+                weights[key] = value
+
+    # Resolve fixed versus fitted weights before deciding whether noise is
+    # needed. Ordinary two-period DiD has no pretreatment differences, but
+    # its fixed contrast does not use regularization or an optimizer.
+    if weights is None:
+        weights = {'lambda': None, 'omega': None, 'beta': None}
+    if update_lambda is None:
+        update_lambda = weights.get('lambda') is None
+    if update_omega is None:
+        update_omega = weights.get('omega') is None
+    if not update_lambda and weights.get('lambda') is None:
+        raise ValueError("Either update_lambda must be True or weights['lambda'] must be provided")
+    if not update_omega and weights.get('omega') is None:
+        raise ValueError("Either update_omega must be True or weights['omega'] must be provided")
+
     # Calculate dimensions
     N1 = Y.shape[0] - N0
     T1 = Y.shape[1] - T0
     
     # Set default noise level
     if noise_level is None:
-        # Calculate standard deviation of first differences
-        diffs = np.diff(Y[:N0, :T0], axis=1)
-        if diffs.size == 0:  # Handle case with only one pre-treatment period
+        if not update_lambda and not update_omega and X.shape[2] == 0:
             noise_level = 0.0
         else:
+            diffs = np.diff(Y[:N0, :T0], axis=1)
+            if diffs.size < 2:
+                raise ValueError("At least two control pre-treatment differences are needed to estimate noise; supply noise_level explicitly otherwise")
             noise_level = np.std(diffs, ddof=1) # Match R's sd() which uses ddof=1
+
+    if not np.isfinite(noise_level) or noise_level < 0:
+        raise ValueError("noise_level must be finite and nonnegative")
     
     # Set default eta_omega
     if eta_omega is None:
@@ -140,24 +170,6 @@ def synthdid_estimate(Y: np.ndarray,
     # Set default min_decrease
     if min_decrease is None:
         min_decrease = 1e-5 * noise_level
-    
-    # Initialize weights if not provided
-    if weights is None:
-        weights = {'lambda': None, 'omega': None, 'beta': None}
-    
-    # Set default update flags
-    if update_lambda is None:
-        update_lambda = weights.get('lambda') is None
-    
-    if update_omega is None:
-        update_omega = weights.get('omega') is None
-    
-    # Check that we have weights or will estimate them
-    if not update_lambda and weights.get('lambda') is None:
-        raise ValueError("Either update_lambda must be True or weights['lambda'] must be provided")
-    
-    if not update_omega and weights.get('omega') is None:
-        raise ValueError("Either update_omega must be True or weights['omega'] must be provided")
     
     # Set max_iter_pre_sparsify to max_iter if no sparsify function
     if sparsify is None:
@@ -252,17 +264,6 @@ def synthdid_estimate(Y: np.ndarray,
             'vals': opt_weights['vals']
         }
     
-    # Apply sparsify post-optimization if specified
-    if sparsify is not None and X.shape[2] == 0: # only sparsify if no covariates, to match R
-        if weights.get('lambda') is not None:
-            weights['lambda'] = sparsify(weights['lambda'].astype(np.float64))
-            # The sparsify function should handle normalization and NaNs.
-            # If result is all NaNs, or original was empty, it should be fine.
-
-        if weights.get('omega') is not None:
-            weights['omega'] = sparsify(weights['omega'].astype(np.float64))
-            # Similar to lambda, sparsify handles this.
-
     # Compute X.beta - use float64 for intermediate calculations to match R precision
     X_beta = contract3(X, weights.get('beta', np.array([])))
     
@@ -328,7 +329,7 @@ def sc_estimate(Y: np.ndarray,
     if isinstance(weights_param, dict) and 'omega' in weights_param:
         sc_weights['omega'] = weights_param['omega']
         # Set update_omega to False since we're using provided weights
-        kwargs['update_omega'] = False
+        kwargs.setdefault('update_omega', False)
     
     # Remove weights from kwargs to avoid confusion in synthdid_estimate
     kwargs.pop('weights', None)
@@ -470,4 +471,4 @@ def synthdid_placebo(estimate: SynthDIDEstimate, treated_fraction: Optional[floa
     elif estimator == "did_estimate":
         return did_estimate(Y_placebo, setup['N0'], placebo_T0, X=X_placebo, **opts)
     else:
-        raise ValueError(f"Unknown estimator type: {estimator}") 
+        raise ValueError(f"Unknown estimator type: {estimator}")

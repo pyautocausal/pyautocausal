@@ -3,7 +3,7 @@ import logging
 from typing import List, Dict, Any, Optional
 
 # Import validation components
-from pyautocausal.data_validation.validator_base import DataValidator
+from pyautocausal.data_validation.validator_base import DataValidator, DataValidationError
 from pyautocausal.data_validation.checks.basic_checks import RequiredColumnsCheck, RequiredColumnsConfig, ColumnTypesCheck, ColumnTypesConfig, DuplicateRowsCheck, DuplicateRowsConfig
 from pyautocausal.data_validation.checks.missing_data_checks import MissingDataCheck, MissingDataConfig
 from pyautocausal.data_validation.checks.categorical_checks import InferCategoricalColumnsCheck, InferCategoricalColumnsConfig
@@ -17,13 +17,17 @@ from pyautocausal.data_cleaning.operations.schema_operations import UpdateColumn
 from pyautocausal.data_cleaning.operations.time_operations import StandardizeTimePeriodsOperation
 from pyautocausal.data_cleaning.planner import DataCleaningPlanner
 from pyautocausal.data_cleaning.base import CleaningMetadata
+from pyautocausal.data_validation.checks.design_checks import CausalDesignCheck, CausalDesignConfig
 
 class AutoCleaner:
     """A high-level facade for performing common data validation and cleaning tasks."""
-    def __init__(self):
+    def __init__(self, unit_column: Optional[str] = None):
         self._checks = []
         self._operations = []
         self._configs = {}
+        self._post_checks = []
+        self._unit_column = unit_column
+        self.metadata = None
 
     def check_required_columns(self, required_columns: List[str], **kwargs):
         """Ensures that the given columns are present in the DataFrame."""
@@ -43,18 +47,30 @@ class AutoCleaner:
         strategy: str = "drop_rows",
         check_columns: Optional[List[str]] = None,
         fill_value=None,
+        max_missing_fraction: float = 0.1,
         **kwargs
     ):
         """
         Adds a check for missing data and a corresponding cleaning operation.
 
         Args:
-            strategy (str): 'drop_rows' or 'fill'.
+            strategy (str): 'drop_rows', 'reject', or 'fill'. Reject fails on any missing value.
             check_columns (list, optional): Columns to check for missing data. Defaults to all.
             fill_value: Value to use when strategy is 'fill'.
+            max_missing_fraction: Maximum missing fraction per checked column,
+                between 0 and 1. The default is 0.1. Exceeding it stops cleaning.
         """
+        if strategy not in {"drop_rows", "reject", "fill"}:
+            raise ValueError(f"Unknown missing data strategy: {strategy}")
+        if not 0 <= max_missing_fraction <= 1:
+            raise ValueError("max_missing_fraction must be between 0 and 1")
         self._checks.append(MissingDataCheck())
-        self._configs["missing_data"] = MissingDataConfig(check_columns=check_columns, **kwargs)
+        self._configs["missing_data"] = MissingDataConfig(
+            check_columns=check_columns,
+            max_missing_fraction=0 if strategy == "reject" else max_missing_fraction,
+            **kwargs,
+        )
+        self._missing_strategy = strategy
 
         if strategy == "drop_rows":
             self._operations.append(DropMissingRowsOperation())
@@ -62,8 +78,21 @@ class AutoCleaner:
             # Store fill configuration for later use in hint creation
             self._fill_strategy = {"fill_value": fill_value, "check_columns": check_columns}
             self._operations.append(FillMissingWithValueOperation())
-        else:
-            raise ValueError(f"Unknown missing data strategy: {strategy}")
+        return self
+
+    def check_causal_design(self, treatment_column: str = "treat", outcome_column: str = "y",
+                            unit_column: Optional[str] = None, time_column: Optional[str] = None):
+        """Validate the remaining analysis sample after every cleaning operation.
+
+        Pass both unit and time columns to check panel uniqueness, treatment
+        timing and comparison support. Unit labels are preserved unchanged.
+        """
+        self._post_checks.append(CausalDesignCheck(config=CausalDesignConfig(
+            treatment_column=treatment_column, outcome_column=outcome_column,
+            unit_column=unit_column, time_column=time_column,
+        )))
+        if unit_column is not None:
+            self._unit_column = unit_column
         return self
 
     def infer_and_convert_categoricals(self, **kwargs):
@@ -82,14 +111,10 @@ class AutoCleaner:
     
     def standardize_time_periods(self, treatment_column: str = "treatment", time_column: str = "time", **kwargs):
         """
-        Adds a check to standardize time periods relative to first treatment period.
-        
-        This check:
-        1. Finds the minimum time period where treatment==1 occurs
-        2. Creates a standardized mapping where that period becomes index 0
-        3. Earlier periods get negative indices (-1, -2, etc.)
-        4. Later periods get positive indices (1, 2, etc.)
-        5. Automatically applies the standardization as a cleaning operation
+        Maps chronological periods to consecutive integers starting at 1.
+
+        Full datetime precision is preserved and the reversible mapping and
+        first treated period are recorded in cleaning metadata.
         
         Args:
             treatment_column (str): Name of the treatment column. Defaults to "treatment".
@@ -149,7 +174,10 @@ class AutoCleaner:
             fill_operation = next((op for op in self._operations if isinstance(op, FillMissingWithValueOperation)), None)
             if fill_operation:
                 hint = FillMissingWithValueHint(
-                    target_columns=self._fill_strategy.get("check_columns") or list(df.columns),
+                    target_columns=next(
+                        (list(result.metadata['missing_stats']) for result in validation_result.individual_results
+                         if result.check_name == 'missing_data'), []
+                    ),
                     fill_value=self._fill_strategy.get("fill_value"),
                     strategy="constant"
                 )
@@ -161,7 +189,10 @@ class AutoCleaner:
         # 4. Clean
         cleaned_df = cleaning_plan(df.copy())
         metadata = cleaning_plan.get_metadata()
-        
+
+        # Validate the actual estimation sample, not only the pre-cleaning data.
+        post_validation = DataValidator(checks=self._post_checks).validate(cleaned_df, dry_run=True)
+
         # 5. Log structured metadata for framework capture
         rows_before = len(df)
         rows_after = len(cleaned_df)
@@ -170,21 +201,38 @@ class AutoCleaner:
         # Create summary of operations performed
         operation_names = [op.operation_name for op in metadata.transformations]
         
-        # Log the cleaning summary with extra data for framework capture
+        summary = {
+            'rows_before': rows_before,
+            'rows_after': rows_after,
+            'rows_dropped': rows_dropped,
+            'operations_performed': operation_names,
+            'total_transformations': len(metadata.transformations),
+            'full_metadata': metadata.to_dict(),
+            'post_validation': [result.metadata for result in post_validation.individual_results],
+            'post_validation_passed': post_validation.passed,
+        }
+        if "missing_data" in self._configs:
+            summary['missing_strategy'] = self._missing_strategy
+            summary['max_missing_fraction'] = self._configs['missing_data'].max_missing_fraction
+        unit = self._unit_column
+        if unit is not None and unit in df.columns:
+            before = df[unit].dropna().unique().tolist()
+            after = set(cleaned_df[unit].dropna().unique())
+            summary.update(unit_column=unit, units_before=len(before), units_after=len(after),
+                           units_dropped=[value for value in before if value not in after])
+        self.metadata = summary
+        cleaned_df.attrs['cleaning_metadata'] = list(df.attrs.get('cleaning_metadata', [])) + [summary]
         logger.info(
             f"Data cleaning completed: {rows_dropped} rows dropped, {len(operation_names)} operations performed",
-            extra={
-                'cleaning_metadata': {
-                    'rows_before': rows_before,
-                    'rows_after': rows_after,
-                    'rows_dropped': rows_dropped,
-                    'operations_performed': operation_names,
-                    'total_transformations': len(metadata.transformations),
-                    'full_metadata': metadata.to_dict() if hasattr(metadata, 'to_dict') else str(metadata)
-                }
-            }
+            extra={'cleaning_metadata': summary},
         )
-        
+
+        if post_validation.summary['total_errors']:
+            error = DataValidationError("The cleaned sample does not support causal estimation", post_validation)
+            error.cleaning_metadata = summary
+            error.cleaning_history = cleaned_df.attrs['cleaning_metadata']
+            raise error
+
         # Log individual operations for detailed tracking
         for i, transformation in enumerate(metadata.transformations):
             logger.debug(

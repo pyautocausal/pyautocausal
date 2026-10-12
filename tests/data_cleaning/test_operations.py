@@ -24,9 +24,10 @@ def test_update_column_types(sample_df):
     op = UpdateColumnTypesOperation()
     hint = UpdateColumnTypesHint(type_mapping={"A": "str", "D": "category"})
     cleaned_df, _ = op.apply(sample_df, hint)
-    assert cleaned_df["A"].dtype == "object" # Pandas uses 'object' for strings
+    assert pd.api.types.is_string_dtype(cleaned_df["A"])
+    assert cleaned_df["A"].tolist() == ["1", "2", "3", "4", "5"]
     assert cleaned_df["D"].dtype == "category"
-    assert cleaned_df["B"].dtype == "object"  # Unchanged
+    pd.testing.assert_series_equal(cleaned_df["B"], sample_df["B"])
 
 
 def test_convert_to_categorical(sample_df):
@@ -58,4 +59,4 @@ def test_drop_duplicate_rows():
     hint = DropDuplicateRowsHint()
     cleaned_df, _ = op.apply(df, hint)
     assert len(cleaned_df) == 3
-    assert cleaned_df.iloc[2].to_dict() == {"A": 4, "B": "d"} 
+    assert cleaned_df.iloc[2].to_dict() == {"A": 4, "B": "d"}
