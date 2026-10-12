@@ -62,6 +62,7 @@ fsspec = {extras = ["http"], version = "^2025.7.0"}
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.2"
+pytz = ">=2024.1"
 nbconvert = "^7.16.6"
 nbclient = "^0.10.2"
 ipykernel = "^6.30.0"

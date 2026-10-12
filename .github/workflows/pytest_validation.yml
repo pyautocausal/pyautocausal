@@ -79,7 +79,7 @@ jobs:
         if: matrix.extras == 'all'
         shell: bash
         run: |
-          "$RUNNER_TEMP/wheel-env/bin/python" -m pip install 'pytest>=8,<9'
+          "$RUNNER_TEMP/wheel-env/bin/python" -m pip install 'pytest>=8,<9' 'pytz>=2024.1'
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/wheel-env/bin/python" -I -m pytest "$GITHUB_WORKSPACE/tests/" -m 'not scientific' --junitxml=wheel-results.xml
       - uses: actions/upload-artifact@v4
