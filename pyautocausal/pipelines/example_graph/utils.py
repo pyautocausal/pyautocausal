@@ -66,24 +66,29 @@ def export_outputs(
     data_path: Optional[Union[Path, str]] = None,
     df: Optional[pd.DataFrame] = None,
     output_path: Path = None,
-    data_filename: str = "data.csv"
+    data_filename: str = "data.csv",
+    *,
+    compact: bool = False,
 ) -> None:
     """Export graph visualization, notebook, and HTML report.
     
     This function creates:
     1. A markdown visualization of the graph structure
     2. A Jupyter notebook with the analysis code
-    3. An HTML report with executed results (if possible)
+    3. An HTML report with executed results
     
     Args:
         graph: The ExecutableGraph that was executed
         data_path: Path to the data file (mutually exclusive with df)
-        df: DataFrame to save and use (mutually exclusive with data_path)
+        df: DataFrame to save and use (mutually exclusive with data_path).
+            A CSV copy is saved for inspection and a typed Parquet snapshot for replay.
         output_path: Base output directory
         data_filename: Name to use when saving DataFrame (default: "data.csv")
+        compact: Hide implementation inputs in HTML while retaining notebook code
     
     Raises:
         ValueError: If neither or both data_path and df are provided
+        Exception: Export failures propagate and are recorded in execution_report.json
     """
     
     # Validate inputs
@@ -99,50 +104,83 @@ def export_outputs(
     # Create output directories if they don't exist
     plots_dir, text_dir = setup_output_directories(output_path)
 
-    # Handle DataFrame case - save it to output directory
-    if df is not None:
-        data_path = output_path / data_filename
-        df.to_csv(data_path, index=False)
-        print(f"Data saved to {data_path}")
-
     from pyautocausal.persistence.local_output_handler import LocalOutputHandler
-    LocalOutputHandler(output_path).save_json("execution_report", graph.execution_report())
-
-    # Graph visualization
+    handler = LocalOutputHandler(output_path)
+    report = graph.execution_report()
+    report['export'] = {'state': 'running', 'stage': 'data'}
+    handler.save_json("execution_report", report)
     md_visualization_path = text_dir / "pipeline_visualization.md"
-    visualize_graph(graph, save_path=str(md_visualization_path))
-    print(f"Graph visualization saved to {md_visualization_path}")
-    
-    # Notebook and HTML export - place directly in output_path
     notebook_path = output_path / "pipeline_execution.ipynb"
     html_path = output_path / "pipeline_execution.html"
-    
     exporter = NotebookExporter(graph)
-    
-    # Export notebook - use just the filename since notebook and data are in same directory
-    import os
-    data_file_name = os.path.relpath(Path(data_path).resolve(), output_path.resolve())
-    
-    exporter.export_notebook(
-        str(notebook_path),
-        data_path=data_file_name,
-        loading_function="pd.read_csv"
-    )
-    print(f"Notebook exported to {notebook_path}")
-    
-    # Export and run to HTML
+
     try:
+        loading_function = "pd.read_csv"
+        if df is not None:
+            data_path = output_path / data_filename
+            df.to_csv(data_path, index=False)
+            print(f"Data saved to {data_path}")
+            # CSV inference can turn distinct labels ('001', '01', '1') into
+            # one unit, and loses timestamps, categories and index values.
+            # Keep an inspectable CSV, but replay a checked typed snapshot.
+            data_path = Path(str(data_path) + '.parquet')
+            df.to_parquet(data_path)
+            try:
+                pd.testing.assert_frame_equal(df, pd.read_parquet(data_path), check_exact=True)
+            except AssertionError as error:
+                raise ValueError("DataFrame cannot be replayed faithfully from Parquet; "
+                                 "use NotebookExporter with an explicit typed loader") from error
+            loading_function = "pd.read_parquet"
+        else:
+            # Refuse a successful-looking report if the convenient CSV loader
+            # changes the actual input on which this executed path was based.
+            inputs = [node.get_result_value() for node in graph.input_nodes.values()
+                      if node.is_completed() and not list(graph.predecessors(node))]
+            if len(inputs) == 1 and isinstance(inputs[0], pd.DataFrame):
+                try:
+                    pd.testing.assert_frame_equal(inputs[0], pd.read_csv(data_path), check_exact=True)
+                except AssertionError as error:
+                    raise ValueError("CSV replay would change the executed input data; "
+                                     "pass df= with that DataFrame for a typed snapshot, "
+                                     "or use NotebookExporter with an explicit loader") from error
+        report['export']['data'] = {
+            'path': str(Path(data_path).name), 'loader': loading_function,
+        }
+
+        report['export']['stage'] = 'visualization'
+        visualize_graph(graph, save_path=str(md_visualization_path))
+        print(f"Graph visualization saved to {md_visualization_path}")
+
+        # Keep data references portable with the notebook's working directory.
+        import os
+        data_file_name = os.path.relpath(Path(data_path).resolve(), output_path.resolve())
+        report['export']['stage'] = 'notebook'
+        exporter.export_notebook(
+            str(notebook_path), data_path=data_file_name,
+            loading_function=loading_function, compact=compact,
+        )
+        print(f"Notebook exported to {notebook_path}")
+
+        report['export']['stage'] = 'html'
         html_output_path = exporter.export_and_run_to_html(
             notebook_filepath=notebook_path,
             html_filepath=html_path,
             data_path=data_file_name,
-            loading_function="pd.read_csv",
-            timeout=300  # 5 minutes timeout
+            loading_function=loading_function,
+            timeout=300,  # 5 minutes timeout
+            compact=compact,
         )
         print(f"HTML report with executed results exported to {html_output_path}")
     except Exception as e:
-        print(f"HTML export failed: {e}")
-        print("Notebook is still available for manual inspection")
+        report['export'].update(state='failed', error={
+            'type': type(e).__name__, 'message': str(e),
+        })
+        handler.save_json("execution_report", report)
+        raise
+    report['export'].update(state='completed', artifacts={
+        'notebook': notebook_path.name, 'html': html_path.name,
+    })
+    handler.save_json("execution_report", report)
 
 
 def print_data_characteristics(data) -> None:
@@ -168,4 +206,4 @@ def print_data_characteristics(data) -> None:
     elif data[data['treat'] == 1].groupby('id_unit')['t'].min().nunique() > 1:
         print("Staggered treatment → Callaway & Sant'Anna methods")
     else:
-        print("Panel data → Standard DiD or Event study") 
+        print("Panel data → Standard DiD or Event study")

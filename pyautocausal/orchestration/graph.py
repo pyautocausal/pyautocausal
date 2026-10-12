@@ -545,6 +545,21 @@ class ExecutableGraph(nx.DiGraph):
         """
         return set(self.successors(node))
 
+    def get_node_explicit_argument_names(self, node) -> set:
+        """Return explicit bindings, including names forwarded by decisions."""
+        from .nodes import DecisionNode
+        names = set()
+        for predecessor in self.predecessors(node):
+            edge = self.edges[predecessor, node]
+            bindings = edge.get('argument_names')
+            if bindings:
+                names.update(bindings)
+            elif isinstance(predecessor, DecisionNode):
+                aliases = edge.get('output_aliases', {})
+                names.update(aliases.get(name, name)
+                             for name in self.get_node_explicit_argument_names(predecessor))
+        return names
+
     def get_node_predecessor_outputs(self, node) -> dict:
         """Get outputs from immediate predecessor nodes of the given node.
         

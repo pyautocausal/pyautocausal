@@ -159,119 +159,60 @@ class Node(BaseNode):
         return output_config
 
     def _resolve_function_arguments(self, func: Callable, available_args: dict) -> dict:
+        """Bind named predecessors first, then legacy single inputs and context.
+
+        An explicit binding is never reassigned to a different parameter. The
+        historical single-input shorthand remains available for unbound edges.
         """
-        Resolve arguments for a function from available arguments and run context.
-        Handles functions with default argument values.
-        We allow for lambda functions to take any argument as long as it's a single argument.
-        
-        Args:
-            func: The function that needs arguments
-            available_args: Dictionary of already available arguments
-            
-        Returns:
-            dict: Complete dictionary of resolved arguments
-        """
-        
-        is_lambda_with_single_argument = is_lambda(func) and func.__code__.co_argcount == 1
-        if is_lambda_with_single_argument:
-            self.logger.info(f"Node {self.name}: has a lambda function with a single argument as either an action function or a condition function")
-            available_args_keys = list(available_args.keys())
-            if len(available_args_keys) == 1:
-                self.logger.info(f"Node {self.name}: Lambda function with single argument {func.__name__} will use argument {available_args_keys[0]} from available arguments")
-                return {func.__code__.co_varnames[0]: available_args[available_args_keys[0]]}
-            else:
-                raise ValueError(f"Lambda function with single argument {func.__name__} must take a single argument, got {list(available_args.keys())}")
-        
-        
-        # Get information about function parameters
         signature = inspect.signature(func)
-        required_params = {
-            name: None
-            for name, param in signature.parameters.items()
-            if param.default is inspect.Parameter.empty # only include required parameters
-              and param.kind != inspect.Parameter.VAR_KEYWORD # exclude varargs
+        parameters = {
+            name: parameter for name, parameter in signature.parameters.items()
+            if parameter.kind not in (inspect.Parameter.VAR_KEYWORD,
+                                      inspect.Parameter.VAR_POSITIONAL)
         }
+        required = {name for name, parameter in parameters.items()
+                    if parameter.default is inspect.Parameter.empty}
+        has_varkeyword = any(parameter.kind == inspect.Parameter.VAR_KEYWORD
+                             for parameter in signature.parameters.values())
+        explicit = self.graph.get_node_explicit_argument_names(self) if self.graph is not None else set()
+        unknown_explicit = (set(available_args) & explicit) - set(parameters)
+        if unknown_explicit and not has_varkeyword:
+            raise ValueError(f"Explicit bindings do not match parameters in node {self.name}: "
+                             f"{sorted(unknown_explicit)}")
 
-        # If there's one required param and one available arg, map them
-        if len(required_params) == 1 and len(available_args) == 1:
-            param_name = list(required_params.keys())[0]
-            arg_name = list(available_args.keys())[0]
-            
-            # Log if argument names don't match
-            if param_name != arg_name:
-                self.logger.info(f"Node {self.name}: Implicitly mapping argument '{arg_name}' to parameter '{param_name}' despite name mismatch")
-            
-            # Update required_params and set missing_required to empty
-            required_params[param_name] = available_args[arg_name]
-            missing_required = set()
-        else:
-            missing_required = set(required_params.keys())
+        arguments = {name: value for name, value in available_args.items()
+                     if name in parameters}
+        unused = {name: value for name, value in available_args.items()
+                  if name not in parameters}
+        # Preserve the convenient f(data) <- node_named_something_else form.
+        # A named optional parameter must not also fill a required parameter.
+        if len(available_args) == 1 and len(unused) == 1:
+            source = next(iter(unused))
+            target = None
+            if source not in explicit:
+                if len(required) == 1:
+                    target = next(iter(required))
+                elif is_lambda(func) and len(parameters) == 1:
+                    target = next(iter(parameters))
+            if target is not None:
+                arguments[target] = unused.pop(source)
 
-        # Track optional parameter names but don't initialize them with None
-        optional_param_names = {
-            name for name, param in signature.parameters.items()
-            if param.default is not inspect.Parameter.empty
-        }
-        optional_params = {}
-        has_varkeyword = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
-        # check if any keyword arguments are VAR_KEYWORD
+        if has_varkeyword:
+            arguments.update(unused)
+        context = getattr(self.graph, 'run_context', None)
+        if context is not None:
+            for name in parameters.keys() - arguments.keys():
+                if hasattr(context, name):
+                    arguments[name] = getattr(context, name)
 
-        missing_optional = set(optional_param_names)
-        
-        # Start with available arguments, but only make arguments available if we haven't already mapped them
-        # this is to avoid having one required parameter that maps to multiple arguments
-        arguments = {key: value for key, value in available_args.items() if required_params.get(key) is None}
-        for argument in arguments.keys():
-            # we only want to add arguments to required_params if we have missing required parameters
-            # if we don't have missing required parameters at this point, it means that we only have one required parameter
-            # and one available argument, so we've already mapped them
-            if missing_required and argument in required_params:
-                required_params[argument] = arguments[argument]
-                if argument in missing_required:  # Only remove if it's still missing
-                    missing_required.remove(argument)
-            elif argument in optional_param_names:
-                optional_params[argument] = arguments[argument]
-                missing_optional.remove(argument)
-            elif has_varkeyword:
-                # if there are varargs we always add the argument to optional_params
-                optional_params[argument] = arguments[argument]
-        
-        # For any missing required parameters, try to get them from run context
-        
-        if missing_required and hasattr(self.graph, 'run_context') and self.graph.run_context is not None:
-            found_in_context = []
-            for param in missing_required:
-                if hasattr(self.graph.run_context, param):
-                    required_params[param] = getattr(self.graph.run_context, param)
-                    found_in_context.append(param)
-            # Remove found parameters after iteration
-            for param in found_in_context:
-                missing_required.remove(param)
-
-        
-        # Check if we have all required parameters
+        missing_required = required - arguments.keys()
         if missing_required:
+            function_name = getattr(func, '__name__', type(func).__name__)
             raise ValueError(
-                f"Missing required parameters for {func.__name__} in node {self.name}: "
+                f"Missing required parameters for {function_name} in node {self.name}: "
                 f"{missing_required}. Not found in available arguments or run context."
             )
-        
-        # For optional parameters, try to get them from available args or run context
-        # but don't raise an error if they're not found
-
-        if missing_optional and hasattr(self.graph, 'run_context') and self.graph.run_context is not None:
-            found_optional_in_context = []
-            for param in missing_optional:
-                if hasattr(self.graph.run_context, param):
-                    optional_params[param] = getattr(self.graph.run_context, param)
-                    found_optional_in_context.append(param)
-            # Remove found parameters after iteration
-            for param in found_optional_in_context:
-                missing_optional.remove(param)
-
-                            
-        
-        return {**required_params, **optional_params}
+        return arguments
 
     def _try_recreate_exception_with_node_context(self, original_exception: Exception) -> Optional[Exception]:
         """Attempt to recreate the original exception with node context added."""

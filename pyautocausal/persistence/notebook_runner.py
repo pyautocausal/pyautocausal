@@ -11,6 +11,14 @@ from importlib.util import find_spec
 
 logger = logging.getLogger(__name__)
 
+# Jupyter's source_hidden flag alone is ignored by nbconvert's HTML template.
+# Remove tagged inputs only at rendering time: their code still executes and
+# remains in the source notebook, while results and diagnostics stay visible.
+_HIDDEN_INPUT_ARGS = (
+    "--TagRemovePreprocessor.enabled=True",
+    "--TagRemovePreprocessor.remove_input_tags=['hide-input']",
+)
+
 
 @contextmanager
 def _execution_kernel(kernel_name):
@@ -96,6 +104,7 @@ def run_notebook_and_create_html(
                 "--output", str(output_html_path.absolute()),
                 str(notebook_path.absolute())
             ]
+            cmd.extend(_HIDDEN_INPUT_ARGS)
             subprocess.run(cmd, cwd=working_directory, check=True,
                            capture_output=True, text=True, env=env)
 
@@ -160,6 +169,7 @@ def convert_notebook_to_html(
             "--output", str(output_html_path.absolute()),
             str(notebook_path.absolute())
         ]
+        cmd.extend(_HIDDEN_INPUT_ARGS)
         
         # Add options for excluding input or output if requested
         if not include_input:
@@ -185,4 +195,4 @@ def convert_notebook_to_html(
     except FileNotFoundError as e:
         if "jupyter" in str(e):
             raise ImportError("Jupyter is not installed. Please install with: pip install jupyter nbconvert")
-        raise 
+        raise

@@ -117,3 +117,53 @@ def test_nested_merges_compose_original_argument_names(tmp_path, with_decision):
     for graph in [outer, restored]:
         graph.execute_graph()
         assert graph.get('sum').get_result_value() == 8
+
+
+@pytest.mark.parametrize('as_lambda', [False, True])
+def test_named_optional_predecessor_does_not_replace_required_context(as_lambda):
+    from pyautocausal.orchestration.run_context import RunContext
+    def calculate(data, multiplier=2):
+        return data * multiplier
+    action = (lambda data, multiplier=2: data * multiplier) if as_lambda else calculate
+    graph = ExecutableGraph().configure_runtime(run_context=RunContext({'data': 10}))
+    graph.create_node('factor', lambda: 3)
+    graph.create_node('result', action, {'multiplier': 'factor'})
+    graph.execute_graph()
+    assert graph.get('result').get_result_value() == 30
+
+
+def test_named_optional_input_leaves_missing_required_argument_unfilled():
+    def calculate(data, multiplier=2):
+        return data * multiplier
+    graph = ExecutableGraph().create_node('factor', lambda: 3)
+    graph.create_node('result', calculate, {'multiplier': 'factor'})
+    with pytest.raises(NodeExecutionError, match='Missing required parameters.*data'):
+        graph.execute_graph()
+
+
+@pytest.mark.parametrize('through_decision', [False, True])
+def test_misspelled_explicit_binding_is_not_implicitly_renamed(through_decision):
+    def calculate(data):
+        return data * 2
+    graph = ExecutableGraph().create_node('source', lambda: 3)
+    if through_decision:
+        graph.create_decision_node('decision', lambda **kwargs: True, {'typo': 'source'})
+        graph.create_node('result', calculate, ['decision'])
+        graph.when_true('decision', 'result')
+    else:
+        graph.create_node('result', calculate, {'typo': 'source'})
+    with pytest.raises(NodeExecutionError, match='Explicit bindings.*typo'):
+        graph.execute_graph()
+
+
+def test_named_binding_preserves_none_and_unbound_single_input_still_maps():
+    from pyautocausal.orchestration.run_context import RunContext
+    def accept(data):
+        return data
+    graph = ExecutableGraph().configure_runtime(run_context=RunContext({'data': 99}))
+    graph.create_node('source', lambda: None)
+    graph.create_node('explicit', accept, {'data': 'source'})
+    graph.create_node('implicit', accept, ['source'])
+    graph.execute_graph()
+    assert graph.get('explicit').get_result_value() is None
+    assert graph.get('implicit').get_result_value() is None

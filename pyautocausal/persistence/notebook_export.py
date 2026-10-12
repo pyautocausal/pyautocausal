@@ -326,24 +326,130 @@ class NotebookExporter:
             available.update(outputs)
         return available
 
+    def _context_value_expression(self, value: Any) -> str:
+        """Create a typed expression without pickling or flattening objects.
+
+        Scientific scalar/array types and ordinary containers have explicit
+        constructors. Unsupported objects must be supplied as notebook inputs
+        instead of silently becoming JSON dictionaries or strings.
+        """
+        import datetime
+        import math
+        import numpy as np
+        import pandas as pd
+        from zoneinfo import ZoneInfo
+
+        if value is None or type(value) in (str, bytes, bool, int):
+            return repr(value)
+        if type(value) in (float, complex):
+            components = (value.real, value.imag) if isinstance(value, complex) else (value,)
+            if not all(math.isfinite(component) for component in components):
+                raise ValueError("Non-finite run-context numbers are not supported")
+            return repr(value)
+        if value is pd.NA or value is pd.NaT:
+            self.needed_imports.add("import pandas as _pac_pandas")
+            return "_pac_pandas.NA" if value is pd.NA else "_pac_pandas.NaT"
+        if isinstance(value, (pd.Timestamp, pd.Timedelta)):
+            self.needed_imports.add("import pandas as _pac_pandas")
+            if isinstance(value, pd.Timestamp):
+                timezone = self._context_value_expression(value.tz)
+                # Integer ticks preserve the original timestamp resolution.
+                ticks = int(value.asm8.view('i8'))
+                unit = np.datetime_data(value.asm8.dtype)[0]
+                return f"_pac_pandas.Timestamp({ticks}, unit={unit!r}, tz={timezone})"
+            ticks = int(value.asm8.view('i8'))
+            unit = np.datetime_data(value.asm8.dtype)[0]
+            return f"_pac_pandas.Timedelta({ticks}, unit={unit!r})"
+        if isinstance(value, ZoneInfo):
+            self.needed_imports.add("import zoneinfo as _pac_zoneinfo")
+            return f"_pac_zoneinfo.ZoneInfo({value.key!r})"
+        if isinstance(value, datetime.timezone):
+            self.needed_imports.add("import datetime as _pac_datetime")
+            offset = self._context_value_expression(value.utcoffset(None))
+            return f"_pac_datetime.timezone({offset}, {value.tzname(None)!r})"
+        # Older pandas versions can retain a pytz timezone. Resolve its named
+        # zone explicitly, rather than replacing it with a fixed UTC offset.
+        if isinstance(value, datetime.tzinfo) and type(value).__module__.startswith('pytz'):
+            self.needed_imports.add("import pytz as _pac_pytz")
+            if getattr(value, 'zone', None) is None:
+                raise TypeError(f"Unsupported run-context timezone: {type(value).__name__}")
+            return f"_pac_pytz.timezone({value.zone!r})"
+        if type(value) is datetime.datetime:
+            self.needed_imports.add("import datetime as _pac_datetime")
+            timezone = self._context_value_expression(value.tzinfo)
+            if value.tzinfo is not None and value.utcoffset() is not None:
+                # Attaching a pytz zone directly gives its historical LMT offset.
+                # Rebuild the known UTC instant and convert to the named zone;
+                # this also preserves the selected side of an ambiguous hour.
+                utc = value.astimezone(datetime.timezone.utc)
+                round_trip = utc.astimezone(value.tzinfo)
+                if (round_trip.replace(tzinfo=None) != value.replace(tzinfo=None)
+                        or round_trip.utcoffset() != value.utcoffset()):
+                    raise ValueError(
+                        "Nonexistent or inconsistent local datetime cannot be replayed; "
+                        "normalize it through UTC before using it as run context"
+                    )
+                parts = (utc.year, utc.month, utc.day, utc.hour, utc.minute,
+                         utc.second, utc.microsecond)
+                return (f"_pac_datetime.datetime({', '.join(map(str, parts))}, "
+                        f"tzinfo=_pac_datetime.timezone.utc).astimezone({timezone})"
+                        f".replace(fold={value.fold})")
+            parts = (value.year, value.month, value.day, value.hour, value.minute,
+                     value.second, value.microsecond)
+            return (f"_pac_datetime.datetime({', '.join(map(str, parts))}, "
+                    f"tzinfo={timezone}, fold={value.fold})")
+        if type(value) is datetime.date:
+            self.needed_imports.add("import datetime as _pac_datetime")
+            return f"_pac_datetime.date({value.year}, {value.month}, {value.day})"
+        if type(value) is datetime.timedelta:
+            self.needed_imports.add("import datetime as _pac_datetime")
+            return (f"_pac_datetime.timedelta(days={value.days}, seconds={value.seconds}, "
+                    f"microseconds={value.microseconds})")
+        if type(value) is np.ndarray or isinstance(value, np.generic):
+            array = np.asarray(value)
+            if (array.dtype.hasobject or array.dtype.fields is not None
+                    or (array.dtype.kind == 'f' and array.dtype.itemsize > 8)
+                    or (array.dtype.kind == 'c' and array.dtype.itemsize > 16)):
+                raise TypeError(f"Unsupported run-context NumPy dtype: {array.dtype}")
+            self.needed_imports.add("import numpy as _pac_numpy")
+            # NumPy tolist converts ns timestamps into integers but other
+            # resolutions into dates. Use labeled integer ticks consistently.
+            values = (array.astype('int64') if array.dtype.kind in 'mM' else array).ravel().tolist()
+            contents = self._context_value_expression(values)
+            expression = (f"_pac_numpy.array({contents}, dtype={array.dtype.str!r})"
+                          f".reshape({array.shape!r})")
+            return expression + "[()]" if isinstance(value, np.generic) else expression
+        if type(value) is tuple:
+            contents = ', '.join(self._context_value_expression(item) for item in value)
+            return '(' + contents + (',' if len(value) == 1 else '') + ')'
+        if type(value) is list:
+            return '[' + ', '.join(self._context_value_expression(item) for item in value) + ']'
+        if type(value) is dict:
+            return '{' + ', '.join(f"{self._context_value_expression(key)}: "
+                                   f"{self._context_value_expression(item)}"
+                                   for key, item in value.items()) + '}'
+        raise TypeError(f"Unsupported run-context type: {type(value).__name__}; "
+                        "supply this value as a notebook input")
+
     def _resolve_function_arguments(self, node: Node, func: Callable) -> Dict[str, str]:
         """Mirror runtime argument binding for the executed path and context."""
         available = self._predecessor_output_expressions(node)
         # Resolve defaults/context using the same routine as node execution.
         # Context values become literal expressions; unavailable arbitrary
         # objects fail explicitly instead of producing an unexecutable repr.
-        from types import SimpleNamespace
-        from .serialization import jsonify
         original_context = self.graph.run_context
-        context = {}
-        if original_context is not None:
-            for key, value in original_context.metadata.items():
+        exporter = self
+
+        class ContextExpressions:
+            def __getattr__(self, key):
+                value = getattr(original_context, key)
                 try:
-                    context[key] = repr(jsonify(value))
+                    return exporter._context_value_expression(value)
                 except (TypeError, ValueError) as error:
                     raise ValueError(f"Cannot export run-context value '{key}': {error}") from error
+
         try:
-            self.graph.run_context = SimpleNamespace(**context)
+            self.graph.run_context = ContextExpressions() if original_context is not None else None
             arguments = node._resolve_function_arguments(func, available)
         finally:
             self.graph.run_context = original_context
@@ -481,6 +587,15 @@ class NotebookExporter:
             loading_function: Optional function string to load the data (e.g., 'pd.read_csv')
             compact: Mark implementation cells as collapsed without removing code or diagnostics
         """
+        if data_path is not None and loading_function is not None:
+            completed_inputs = [node.name for node in self.graph.nodes
+                                if isinstance(node, InputNode) and node.is_completed()]
+            if len(completed_inputs) > 1:
+                raise ValueError(
+                    "A single data_path/loading_function cannot replay multiple inputs: "
+                    f"{completed_inputs}. Export without a loader and fill each input "
+                    "cell with its own data."
+                )
         self.compact = compact
         # Reset notebook and imports to ensure clean state
         self.nb = new_notebook()
