@@ -20,18 +20,42 @@ def test_factory_missing_threshold_reaches_pipeline_nodes(tmp_path):
     assert graph.get("ols_stand").state.name == "COMPLETED"
 
 
-def test_string_unit_labels_through_callaway_santanna_graph(minimum_wage_data, tmp_path):
+def test_numeric_and_string_unit_labels_produce_equivalent_public_panel_estimates(minimum_wage_data, tmp_path):
+    original_fixture = minimum_wage_data.copy(deep=True)
     data = minimum_wage_data.rename(columns={"countyreal": "id_unit", "year": "t", "lemp": "y"})
     data["treat"] = ((data["first.treat"] > 0) & (data["t"] >= data["first.treat"])).astype(int)
-    data["id_unit"] = data["id_unit"].map(lambda value: f"county-{value}").astype("string")
     data = data[["id_unit", "t", "treat", "y", "lpop"]]
-    graph = create_panel_graph(tmp_path)
-    graph.fit(df=data)
-    cleaned = graph.get("panel_cleaned_data").get_result_value()
-    assert set(cleaned.id_unit) == set(data.id_unit)
-    assert cleaned.id_unit.dtype == data.id_unit.dtype
-    assert graph.get("cs_never_treated").state.name == "COMPLETED"
-    assert not [node.name for node in graph.nodes() if node.state.name == "FAILED"]
+    models = []
+    for labels in ("numeric", "string"):
+        frame = data.copy(deep=True)
+        if labels == "string":
+            frame["id_unit"] = frame["id_unit"].map(lambda value: f"county-{value}").astype("string")
+        original = frame.copy(deep=True)
+        graph = create_panel_graph(tmp_path / labels)
+        graph.fit(df=frame)
+        cleaned = graph.get("panel_cleaned_data").get_result_value()
+        pd.testing.assert_series_equal(cleaned.id_unit, original.id_unit)
+        pd.testing.assert_frame_equal(frame, original)
+        assert graph.get("cs_never_treated").state.name == "COMPLETED"
+        assert not [node.name for node in graph.nodes() if node.state.name == "FAILED"]
+        models.append(graph.get("cs_never_treated").get_result_value().model)
+
+    reference, relabeled = models
+    for field in ("group", "year"):
+        np.testing.assert_array_equal(reference["att_gt_object"].results[field],
+                                      relabeled["att_gt_object"].results[field])
+    np.testing.assert_allclose(reference["att_gt_object"].results["att"],
+                               relabeled["att_gt_object"].results["att"], rtol=0, atol=1e-12)
+    for aggregation in ("overall_effect", "dynamic_effects", "group_effects"):
+        expected = reference[aggregation].atte
+        actual = relabeled[aggregation].atte
+        np.testing.assert_allclose(actual["overall_att"], expected["overall_att"], rtol=0, atol=1e-12)
+        if expected["att_egt"] is not None:
+            np.testing.assert_array_equal(actual["egt"], expected["egt"])
+            np.testing.assert_allclose(actual["att_egt"], expected["att_egt"], rtol=0, atol=1e-12)
+    # Relabeling can reorder units assigned finite bootstrap draws; this checks
+    # point-estimate invariance, not Monte Carlo equality of standard errors.
+    pd.testing.assert_frame_equal(minimum_wage_data, original_fixture)
 
 
 @pytest.mark.parametrize("kwargs", [{"missing_strategy": "fill"}, {"max_missing_fraction": 1.5}])

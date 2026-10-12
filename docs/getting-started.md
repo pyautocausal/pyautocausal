@@ -1,6 +1,6 @@
 # Getting started
 
-Install Python 3.10–3.12 and `pip install 'pyautocausal[notebooks]>=0.1.2'` if you need executable notebooks or HTML; use the base package for estimation and notebook generation. Until version 0.1.2 is published, follow the [development installation](../README.md#installation).
+Use Python 3.10–3.12 and install the corrected 0.1.2 GitHub wheel with the commands in the [README](../README.md#installation). Choose the `notebooks` extra for notebook execution and HTML, or the base wheel for estimation and notebook generation. PyPI publication is separate; older PyPI versions lack these correctness fixes.
 
 ## Verify a simple result
 
