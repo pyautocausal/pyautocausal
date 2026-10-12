@@ -8,9 +8,20 @@ Panel factories expect `id_unit`, `t`, `treat` and `y`. Cross-sectional factorie
 - `y` is a finite numeric outcome. Outcome transformations and their causal interpretation are the caller’s responsibility.
 - Additional columns may be inferred as controls. Use an explicit specification when control selection matters; an empty control list means no controls. Avoid post-treatment controls unless the design specifically justifies them.
 
+
+## Control selection
+
+Default causal cleaning preserves numeric control dtypes, including low-cardinality and binary variables. It does not convert them to categorical dtype based on their number of distinct values. With `control_cols=None`, specifications infer numeric controls after excluding outcome, treatment, structural identifiers and periods. The conventional design-metadata names `post`, `relative_time` and `treatment_time` are also excluded from automatic inference. An explicitly supplied control list takes precedence; `[]` requests no controls.
+
+Cross-sectional inference excludes `id_unit` and `t`, even when they are numeric. For other column names, pass `unit_col` and `time_col` to `create_cross_sectional_specification`. Relabeling an identifier from numbers to strings should not change the regression's adjustment variables.
+
+Observed categorical, object or string columns are not silently discarded as potential controls. Automatic inference raises an error asking for deliberate encoding or selection. Encode needed categorical controls into numeric columns before using factory pipelines; choose the omitted category and avoid a redundant full set of indicators with an intercept. Alternatively, build an explicit specification with the intended `control_cols`. Some formula estimators support explicitly selected categorical controls, but the C&S, synthetic and machine-learning methods have their own numeric-input requirements. Remove unused descriptive columns from factory inputs or select controls explicitly through the specification API.
+
+Specifications preserve input columns whose names coincide with generated analysis variables. They allocate a distinct internal name and record the generated event-time mapping, so a selected covariate called `event_post0` does not become an event indicator or a plotted treatment-effect coefficient.
+
 ## Missing data
 
-Factory defaults are `missing_strategy='drop_rows'` and `max_missing_fraction=0.1`. The threshold is the maximum missing fraction allowed in each checked column before cleaning. Make the choice explicitly for analyses where dropping observations changes the target population.
+Factory defaults are `missing_strategy='drop_rows'` and `max_missing_fraction=0.1`. The factory checks each input column against the original input row count before dropping any incomplete rows. Missing outcomes cannot shrink the denominator used to evaluate missing covariates later in the pipeline. The threshold is per column, so dropping the union of incomplete rows can remove more than that fraction of the sample. Make the choice explicitly when dropping observations changes the target population.
 
 ```python
 from pathlib import Path
@@ -24,6 +35,8 @@ graph = create_panel_graph(
 ```
 
 `reject` refuses missing values. `drop_rows` permits dropping within the configured threshold; set the threshold deliberately between 0 and 1 if a different policy is justified. Increasing it is permission to remove more observations, not a claim that the missingness is ignorable. Factory pipelines do not fill missing outcomes or treatments with fabricated numbers.
+
+Direct specification constructors apply their missing-data policy to the outcome, treatment, required design columns and selected controls. Their `max_missing_fraction` instead limits the fraction of rows missing any of those required values and defaults to `1.0`; set it explicitly or use `missing_strategy='reject'` when invoking that API directly.
 
 Cleaning metadata lives in `cleaned_frame.attrs['cleaning_metadata']` and is included in graph provenance where available. It records before/after row and unit counts, dropped rows, policy settings and transformations. Time transformations include original values and standardized periods.
 
