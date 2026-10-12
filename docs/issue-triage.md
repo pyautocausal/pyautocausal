@@ -1,27 +1,27 @@
 # Issue triage for the correctness release
 
-Tracking owner: **ytchokni**. These are implementation and review responsibilities, not a claim that changes have already reached main. Close issues only after their acceptance criteria are verified on the merged version.
+Tracking owner: **ytchokni**. The correctness implementation merged in [PR #71](https://github.com/pyautocausal/pyautocausal/pull/71). Acceptance checks were repeated against the merged source before resolving the completed issues. Original enhancement requests that exceed this release remain open with the narrower follow-up scope below.
 
 | Issue | Disposition | Acceptance criteria |
 | --- | --- | --- |
-| [#43](https://github.com/pyautocausal/pyautocausal/issues/43) | Correctness release | Alternative branch outputs can bind one parameter; ambiguous active inputs fail clearly. |
-| [#62](https://github.com/pyautocausal/pyautocausal/issues/62) | Correctness release | Integer and string unit-ID panels yield equivalent estimates through the public pipeline. |
-| [#64](https://github.com/pyautocausal/pyautocausal/issues/64) | Correctness release | Missingness threshold and drop/reject policy are configurable, audited and validated after cleaning. |
-| [#58](https://github.com/pyautocausal/pyautocausal/issues/58) | Correctness release | Missing branch prerequisites fail before partially constructing the branch; valid composition is tested. |
-| [#42](https://github.com/pyautocausal/pyautocausal/issues/42) | Correctness release | Export diagnostics preserve failed and skipped nodes without presenting failure as success. |
-| [#38](https://github.com/pyautocausal/pyautocausal/issues/38) | Retriaged: implementation existed; installation/kernel repairs needed | Installed notebook extra executes a generated notebook to HTML using the intended interpreter. |
-| [#66](https://github.com/pyautocausal/pyautocausal/issues/66) | Correctness release | README local links resolve and advertised quickstarts execute. |
-| [#44](https://github.com/pyautocausal/pyautocausal/issues/44) | Descriptions and provenance | Node descriptions survive composition/export; explicit descriptions can supplement callable docstrings. |
-| [#33](https://github.com/pyautocausal/pyautocausal/issues/33) | Concise presentation | An optional compact notebook view hides implementation clutter without removing execution or diagnostic information. |
-| [#41](https://github.com/pyautocausal/pyautocausal/issues/41) | Common report context | Method, sample, transformations and inference availability remain visible across result types. |
-| [#30](https://github.com/pyautocausal/pyautocausal/issues/30) | Converted to release gates | Known-effect tests, documented inputs, explicit unsupported cases, reproducible output and clean installation pass. |
+| [#43](https://github.com/pyautocausal/pyautocausal/issues/43) | Verified in 0.1.2 | Alternative branch outputs can bind one parameter; ambiguous active inputs fail clearly. |
+| [#62](https://github.com/pyautocausal/pyautocausal/issues/62) | Verified in 0.1.2 | Integer and string unit-ID panels yield equivalent estimates through the public pipeline. |
+| [#64](https://github.com/pyautocausal/pyautocausal/issues/64) | Verified in 0.1.2 | Missingness threshold and drop/reject policy are configurable, audited and validated after cleaning. |
+| [#58](https://github.com/pyautocausal/pyautocausal/issues/58) | Verified in 0.1.2 | Missing branch prerequisites fail before partially constructing the branch; valid composition is tested. |
+| [#42](https://github.com/pyautocausal/pyautocausal/issues/42) | Verified in 0.1.2 | Export diagnostics preserve failed and skipped nodes without presenting failure as success. |
+| [#38](https://github.com/pyautocausal/pyautocausal/issues/38) | Verified in 0.1.2 | Installed notebook extra executes a generated notebook to HTML using the intended interpreter. |
+| [#66](https://github.com/pyautocausal/pyautocausal/issues/66) | Verified in 0.1.2 | README local links resolve and advertised quickstarts execute. |
+| [#44](https://github.com/pyautocausal/pyautocausal/issues/44) | Verified in 0.1.2 | Node descriptions survive composition/export; explicit descriptions can supplement callable docstrings. |
+| [#33](https://github.com/pyautocausal/pyautocausal/issues/33) | Verified in 0.1.2 | An optional compact notebook view hides implementation clutter without removing execution or diagnostic information. |
+| [#41](https://github.com/pyautocausal/pyautocausal/issues/41) | Open presentation follow-up | Shared method/sample/transformation/inference provenance is implemented. Unified coefficient-table and plot styling across estimators remains separate work. |
+| [#30](https://github.com/pyautocausal/pyautocausal/issues/30) | Open notebook portability follow-up | Correctness and installation release gates are implemented. The original goal of notebooks running without installing PyAutoCausal is not implemented; package helper imports remain necessary. |
 | [#19](https://github.com/pyautocausal/pyautocausal/issues/19) | Deferred product feature | Interactive CLI nodes remain out of this correctness release; design separately after the release gates pass. |
 
-The thirteen original findings and subsequent corrections from independent reviews are summarized in [the changelog](../CHANGELOG.md). A local repair or draft PR does not by itself resolve the remote issue.
+The thirteen original findings and subsequent corrections from independent reviews are summarized in [the changelog](../CHANGELOG.md). The three remaining enhancements (#19, #30 and #41) are not represented as completed features.
 
 ## Verification evidence
 
-The implementation is in [PR #71](https://github.com/pyautocausal/pyautocausal/pull/71). These automated checks exercise the acceptance criteria; final issue closure still requires the changes to reach main.
+The implementation is merged in [PR #71](https://github.com/pyautocausal/pyautocausal/pull/71). These automated checks exercise the completed acceptance criteria. The GitHub release includes correction notes, source and wheel checksums, and validation evidence.
 
 | Criteria | Regression evidence |
 | --- | --- |

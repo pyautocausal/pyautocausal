@@ -6,17 +6,19 @@ Python **3.10–3.12** is supported. The package remains alpha software. See [co
 
 ## Installation
 
-These instructions target version 0.1.2 or newer. Until the correctness release is published on PyPI, use the development installation below.
+Install the corrected **0.1.2 wheel from the GitHub release**. PyPI publication is separate; the older PyPI versions do not contain these fixes.
 
 ```bash
-pip install 'pyautocausal>=0.1.2'
+pip install 'pyautocausal @ https://github.com/pyautocausal/pyautocausal/releases/download/v0.1.2/pyautocausal-0.1.2-py3-none-any.whl'
 # Execute exported notebooks and produce HTML:
-pip install 'pyautocausal[notebooks]>=0.1.2'
+pip install 'pyautocausal[notebooks] @ https://github.com/pyautocausal/pyautocausal/releases/download/v0.1.2/pyautocausal-0.1.2-py3-none-any.whl'
 # Optional partially linear DoubleML model:
-pip install 'pyautocausal[doubleml]>=0.1.2'
+pip install 'pyautocausal[doubleml] @ https://github.com/pyautocausal/pyautocausal/releases/download/v0.1.2/pyautocausal-0.1.2-py3-none-any.whl'
 # Both optional features:
-pip install 'pyautocausal[all]>=0.1.2'
+pip install 'pyautocausal[all] @ https://github.com/pyautocausal/pyautocausal/releases/download/v0.1.2/pyautocausal-0.1.2-py3-none-any.whl'
 ```
+
+[Release notes and checksums](https://github.com/pyautocausal/pyautocausal/releases/tag/v0.1.2) identify the corrected artifacts and source commit. The downloadable source archive is also installable with pip.
 
 For the development version:
 

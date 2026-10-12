@@ -1,6 +1,8 @@
 # Changelog
 
-## 0.1.2 — Unreleased correctness release
+## 0.1.2 — 2026-10-12 correctness release
+
+Correction notes, the wheel and source archive are available in the [GitHub release](https://github.com/pyautocausal/pyautocausal/releases/tag/v0.1.2). GitHub and PyPI publication are separate; use the installation instructions in the [README](README.md#installation) to obtain this corrected version.
 
 Re-run affected analyses produced with 0.1.0 or 0.1.1. Both versions were already published before these corrections; key estimator files in the published 0.1.1 source distribution match the reviewed baseline. Existing test success did not rule out the numerical and export errors corrected here. Saved reports are not automatically rewritten.
 
