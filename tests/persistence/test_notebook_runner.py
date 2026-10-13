@@ -115,8 +115,20 @@ def test_run_saves_outputs_without_removing_code_or_metadata(tmp_path):
     assert 'HIDDEN_SOURCE_MARKER' not in html_path.read_text()
 
 
-def test_failed_execution_leaves_source_and_previous_html_unchanged(tmp_path):
+@pytest.mark.parametrize('exception_policy', ['default', 'allowed-name', 'raises-exception-tag'])
+def test_failed_execution_leaves_source_and_previous_html_unchanged(tmp_path, monkeypatch, exception_policy):
+    if exception_policy == 'allowed-name':
+        config_dir = tmp_path / 'jupyter'
+        config_dir.mkdir()
+        (config_dir / 'jupyter_nbconvert_config.py').write_text(
+            "c.ExecutePreprocessor.allow_error_names = ['ValueError']\n"
+        )
+        monkeypatch.setenv('JUPYTER_CONFIG_DIR', str(config_dir))
     notebook = new_notebook(cells=[new_code_cell("print('partial result')\nraise ValueError('deliberate failure')")])
+    notebook.cells[0].outputs = [nbformat.v4.new_output('stream', name='stdout', text='previous valid result\n')]
+    notebook.cells[0].execution_count = 1
+    if exception_policy == 'raises-exception-tag':
+        notebook.cells[0].metadata['tags'] = ['raises-exception']
     path = tmp_path / 'failed.ipynb'
     nbformat.write(notebook, path)
     original = path.read_bytes()

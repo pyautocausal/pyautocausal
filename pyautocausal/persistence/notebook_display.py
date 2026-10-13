@@ -40,6 +40,10 @@ def _coefficient_table(model):
     if not isinstance(model, (Results, ResultsWrapper, _SummaryStr)):
         return False
     params = model.params
+    if getattr(params, "ndim", 1) != 1:
+        summary = model.summary
+        print(summary() if callable(summary) else summary)
+        return True
     if not isinstance(params, pd.Series):
         params = pd.Series(params, index=model.model.exog_names)
     coefficients = params.to_frame("Estimate")
@@ -108,21 +112,28 @@ def _display_spec(spec):
                 _table(frame)
 
 
+def _execution_log(text):
+    if text:
+        display(HTML('<details><summary>Execution log</summary><pre>'
+                     + escape(text) + '</pre></details>'))
+
+
 @contextmanager
 def capture_step_output():
-    """Fold routine stdout while leaving warnings, stderr, and failures visible."""
+    """Capture stdout for display_result; preserve logs immediately if the step fails."""
     output = StringIO()
     try:
         with redirect_stdout(output):
             yield output
-    finally:
-        if output.getvalue():
-            display(HTML('<details><summary>Execution log</summary><pre>'
-                         + escape(output.getvalue()) + '</pre></details>'))
+    except BaseException:
+        _execution_log(output.getvalue())
+        raise
 
 
 def display_result(value, printed=""):
     """Display known result types without dumping internal objects or source data."""
+    if not (isinstance(value, str) and value.strip() == printed.strip()):
+        _execution_log(printed)
     if isinstance(value, Figure):
         if (len(value.axes) == 1 and not value.axes[0].has_data()
                 and value.axes[0].get_title() == "Covariate balance unavailable"):
@@ -142,7 +153,6 @@ def display_result(value, printed=""):
     elif isinstance(value, BaseSpec):
         _display_spec(value)
     elif isinstance(value, str):
-        if value.strip() != printed.strip():
-            print(value)
+        print(value)
     elif isinstance(value, Number):
         print(value)

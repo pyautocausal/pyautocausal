@@ -106,7 +106,7 @@ def run_notebook_and_create_html(
                     # User HTML export settings must never remove source cells or metadata.
                     "--NotebookExporter.default_preprocessors=['nbconvert.preprocessors.ExecutePreprocessor']",
                     "--NotebookExporter.preprocessors=[]",
-                    "--ExecutePreprocessor.allow_errors=False",
+                    "--ExecutePreprocessor.force_raise_errors=True",
                     "--ExecutePreprocessor.timeout", str(timeout),
                     "--ExecutePreprocessor.kernel_name", selected_kernel,
                     "--output", str(executed_path),

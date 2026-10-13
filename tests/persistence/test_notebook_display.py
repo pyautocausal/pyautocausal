@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import pytest
 import statsmodels.api as sm
 from IPython.display import HTML, Image
 
@@ -67,6 +68,22 @@ def test_coefficient_table_uses_native_intervals(monkeypatch):
     pd.testing.assert_series_equal(seen[0]["Estimate"], model.params, check_names=False)
     np.testing.assert_allclose(seen[0][["95% CI lower", "95% CI upper"]], model.conf_int())
     assert "Observations: 5" in _html(outputs)
+
+
+@pytest.mark.parametrize("pandas_input", [True, False])
+def test_multinomial_coefficients_fall_back_to_native_summary(monkeypatch, capsys, pandas_input):
+    outputs = _capture(monkeypatch)
+    rng = np.random.default_rng(19)
+    regressors = sm.add_constant(pd.DataFrame({"x": rng.normal(size=120)}))
+    model = sm.MNLogit(rng.integers(0, 3, size=120),
+                      regressors if pandas_input else regressors.to_numpy()).fit(disp=False)
+    spec = BaseSpec(pd.DataFrame(), "y ~ x")
+    spec.model = model
+
+    notebook_display.display_result(spec)
+
+    assert capsys.readouterr().out == str(model.summary()) + "\n"
+    assert outputs == []
 
 
 def test_synthetic_zero_estimate_preserved_and_unavailable_inference_visible(monkeypatch):
@@ -150,7 +167,7 @@ def test_empty_balance_figure_becomes_notice_but_data_figures_stay_images(monkey
     assert isinstance(outputs[-1], Image)
 
 
-def test_printed_summary_is_folded_once_and_escaped(monkeypatch, capsys):
+def test_printed_summary_is_visible_once_as_plain_text(monkeypatch, capsys):
     from pyautocausal.pipelines.library.output import write_balance_summary_table
 
     outputs = _capture(monkeypatch)
@@ -160,27 +177,52 @@ def test_printed_summary_is_folded_once_and_escaped(monkeypatch, capsys):
     with notebook_display.capture_step_output() as captured:
         result = write_balance_summary_table.get_function()(spec)
     notebook_display.display_result(result, printed=captured.getvalue())
+    assert outputs == []
+    assert capsys.readouterr().out == result + "\n"
+
+
+def test_uplift_estimate_and_inference_are_visible_once(monkeypatch, capsys):
+    from pyautocausal.pipelines.library.output import write_uplift_summary
+
+    outputs = _capture(monkeypatch)
+    spec = SimpleNamespace(model={}, ate_estimate=0.125, ate_ci=None,
+                           inference={"status": "unavailable", "reason": "No validated interval"})
+    with notebook_display.capture_step_output() as captured:
+        result = write_uplift_summary.get_function()(spec)
+    notebook_display.display_result(result, printed=captured.getvalue())
+
+    assert outputs == []
+    visible = capsys.readouterr().out
+    assert visible == result + "\n"
+    assert "Average Treatment Effect (ATE): 0.1250" in visible
+    assert "No validated interval" in visible
+
+
+def test_routine_stdout_is_folded_and_escaped_for_non_string_results(monkeypatch):
+    outputs = _capture(monkeypatch)
+    with notebook_display.capture_step_output() as captured:
+        print("<script>routine progress</script>")
+    notebook_display.display_result(None, printed=captured.getvalue())
+
     html = _html(outputs)
     assert "<details><summary>Execution log</summary>" in html
-    assert html.count("BALANCE TEST RESULTS") == 1
-    assert "&lt;script&gt;covariates&lt;/script&gt;" in html
+    assert "&lt;script&gt;routine progress&lt;/script&gt;" in html
     assert "<script>" not in html
-    assert capsys.readouterr().out == ""
 
 
-def test_capture_preserves_warnings_stderr_and_exceptions(monkeypatch, capsys):
+@pytest.mark.parametrize("error", [RuntimeError, KeyboardInterrupt])
+def test_capture_preserves_warnings_stderr_and_exceptions(monkeypatch, capsys, error):
     import sys
     import warnings
-    import pytest
 
     outputs = _capture(monkeypatch)
     with pytest.warns(UserWarning, match="inference warning"):
-        with pytest.raises(RuntimeError, match="step failed"):
+        with pytest.raises(error, match="step failed"):
             with notebook_display.capture_step_output() as captured:
                 print("before failure")
                 print("stderr remains visible", file=sys.stderr)
                 warnings.warn("inference warning")
-                raise RuntimeError("step failed")
+                raise error("step failed")
     assert captured.getvalue() == "before failure\n"
     assert "before failure" in _html(outputs)
     assert "stderr remains visible" in capsys.readouterr().err
@@ -193,6 +235,7 @@ def test_capture_without_stdout_is_silent_and_new_strings_are_displayed(monkeypa
     assert outputs == []
     notebook_display.display_result("a useful result", printed="routine progress\n")
     assert capsys.readouterr().out == "a useful result\n"
+    assert "routine progress" in _html(outputs)
 
 
 def test_unfitted_balance_spec_displays_numeric_table_and_missing_notice(monkeypatch):
