@@ -45,7 +45,7 @@ from pyautocausal import export_outputs
 export_outputs(graph, df=data, output_path=output, compact=True)
 ```
 
-`export_outputs` generates a notebook and executes it to create HTML, so this call requires the notebook extra. `compact=True` hides implementation inputs in HTML while retaining notebook code, results and diagnostics. Supply the same input frame used for fitting; `df` and `data_path` are mutually exclusive. A CSV supplied through `data_path` is rejected if inference of its types or values changes the fitted input.
+`export_outputs` generates a notebook and executes it to create HTML, so this call requires the notebook extra. Successful execution also saves cell outputs in the `.ipynb`. The default `compact=True` hides implementation inputs in HTML while retaining notebook code, results and diagnostics. Supply the same input frame used for fitting; `df` and `data_path` are mutually exclusive. A CSV supplied through `data_path` is rejected if inference of its types or values changes the fitted input.
 
 Notebook execution uses the current Python interpreter by default, without replacing user-level Jupyter kernel configuration. A named kernel can be selected through the lower-level notebook runner; see the [pipeline guide](pipeline-guide.md). Install the relevant extras in that kernel's environment.
 
@@ -56,7 +56,7 @@ The output directory contains:
 | Artifact | Purpose |
 | --- | --- |
 | `pipeline_execution.html` | Executed report to open in a browser. |
-| `pipeline_execution.ipynb` | Code for replaying the completed analysis path. |
+| `pipeline_execution.ipynb` | Replay code and saved outputs from executing the completed analysis path. |
 | `data.csv.parquet` | Typed input snapshot used by the notebook; preserves IDs, timestamps and column types. |
 | `data.csv` | Additional copy for inspection, not the notebook's replay input. |
 | `execution_report.json` | Node states, analysis provenance, recorded transformations and separate export status. |

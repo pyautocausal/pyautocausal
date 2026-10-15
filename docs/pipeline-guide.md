@@ -145,13 +145,13 @@ output = Path("report-output")
 report_graph = ExecutableGraph().configure_runtime(output_path=output)
 report_graph.create_input_node("df", pd.DataFrame)
 report_graph.create_node(
-    "mean", mean_outcome, predecessors={"data": "df"}, display_function=print
+    "mean", mean_outcome, predecessors={"data": "df"}
 )
 report_graph.fit(df=data)
-export_outputs(report_graph, df=data, output_path=output, compact=True)
+export_outputs(report_graph, df=data, output_path=output, title="Mean outcome analysis")
 ```
 
-`display_function=print` makes the returned scalar visible in the notebook and HTML. Without a display function, an action's return value is assigned for downstream use but is not automatically displayed.
+Numeric and text return values, pandas tables and figures are displayed automatically in the notebook and HTML. Supported fitted specifications receive result summaries. A node's explicit `display_function` overrides automatic display; for example, `display_function=print` uses plain text. Returned summaries remain visible, while routine printed output appears in expandable execution logs. Warnings and errors remain visible.
 
 The helper writes:
 
@@ -160,7 +160,7 @@ The helper writes:
 | `data.csv` | Inspectable copy of the supplied DataFrame. |
 | `data.csv.parquet` | Checked snapshot used for replay, retaining identifiers, dtypes and index. |
 | `text/pipeline_visualization.md` | Graph structure and execution states. |
-| `pipeline_execution.ipynb` | Notebook of the completed analysis path. |
+| `pipeline_execution.ipynb` | Notebook of the completed analysis path, including saved execution outputs. |
 | `pipeline_execution.html` | Results from executing that notebook. |
 | `execution_report.json` | Original execution diagnostics plus export status. |
 
@@ -168,8 +168,10 @@ Pass the same DataFrame used for fitting and keep the Parquet snapshot beside th
 
 Exports replay completed nodes and record failed/skipped nodes as diagnostics. They do not rerun decision selection: changed inputs may require fitting the original graph again. Runtime settings actually consumed by completed nodes are replayed for supported Python containers, NumPy scalars/arrays and date/time values. Unsupported consumed objects produce an explicit export error; unused settings are omitted from executable cells.
 
-`NotebookExporter.export_notebook()` writes without executing. `export_and_run_to_html()` also executes, using a temporary Jupyter kernel for the current Python interpreter unless `kernel_name` is supplied. A shared `data_path`/loader cannot replay multiple external inputs; export without it and fill each input cell separately.
+`NotebookExporter.export_notebook()` writes without executing. `export_and_run_to_html()` also executes, using a temporary Jupyter kernel for the current Python interpreter unless `kernel_name` is supplied. The execution stage saves cell outputs back to the `.ipynb` only after all cells succeed, so results remain visible when the notebook is opened later. A shared `data_path`/loader cannot replay multiple external inputs; export without it and fill each input cell separately.
 
-With `compact=True`, implementation code remains executable in the notebook and is hidden in HTML. Results, execution calls and diagnostics stay visible. Package helpers and dependencies may still be imported: exported notebooks are not package-free standalone programs. See [wrapper functions](wrapper_functions.md) for argument adapters.
+Notebook exports use `compact=True` by default. Setup and implementation code remains executable, starts collapsed in supporting notebook viewers, and is hidden in HTML. Analysis calls and results stay visible. Pass `compact=False` to `export_outputs`, `NotebookExporter.export_notebook` or `export_and_run_to_html` to show all code, or `title="My analysis"` to name the notebook and HTML report. A `node_description` supplies the step heading and expandable method documentation; otherwise the callable's docstring is used.
+
+Reports include navigation, bounded table previews and embedded figures. Table formatting does not change the underlying result. The original execution record and workflow appear in expandable appendices; execution diagnostics also remain in notebook metadata. These describe the original graph run, while displayed results come from the notebook replay. Package helpers and dependencies may still be imported: exported notebooks are not package-free standalone programs. See [wrapper functions](wrapper_functions.md) for argument adapters.
 
 A report failure is separate from an estimation failure. `export_outputs` records `export.state` (`running`, `failed` or `completed`) and `export.stage` (`data`, `visualization`, `notebook` or `html`). Errors propagate; a completed graph alone does not mean the report finished exporting.

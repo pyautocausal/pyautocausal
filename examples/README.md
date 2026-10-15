@@ -24,6 +24,8 @@ Open `pipeline_execution.html` in the requested output directory. Inspect the cl
 
 Keep the generated `data.csv.parquet` file with each notebook. It preserves the input's types and identifiers during replay; `data.csv` is an additional copy for inspection. `execution_report.json` records estimation states, inference availability and the separate report-export status.
 
+New exports save executed notebook outputs, embed plots and table previews, and collapse setup code and technical appendices. Returned summaries remain visible, while routine printed output appears in expandable execution logs. The example scripts supply analysis titles. Exports use `compact=True` by default; pass `compact=False` to `export_outputs` to show all implementation code, or `title="My analysis"` to set a custom title. Rerun the scripts to regenerate older reports with this layout.
+
 Run the notebook from its containing directory, with PyAutoCausal and the relevant extras installed. It replays the completed route; rerun the example script to validate and select a route for changed input. See [the output artifact guide](../docs/getting-started.md#inspect-results-and-replay).
 
 The repository includes generated [minimum-wage outputs](outputs/minimum_wage/) and [California outputs](outputs/california_prop99/) for inspection. Generate a separate directory when checking a change so you can compare results without replacing the checked-in reports.

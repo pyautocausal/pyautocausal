@@ -3,6 +3,7 @@ Plot functions for causal inference visualizations
 """
 
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 import pandas as pd
 import numpy as np
 from typing import Optional, Union, Tuple
@@ -231,13 +232,13 @@ def _extract_event_study_results(spec: Union[EventStudySpec, StaggeredDiDSpec], 
 @make_transformable
 def event_study_plot(spec: Union[StaggeredDiDSpec, EventStudySpec], 
                     confidence_level: float = 0.95,
-                    figsize: tuple = (12, 8),
-                    title: str = "Event Study Plot",
-                    xlabel: str = "Event Time",
-                    ylabel: str = "Coefficient Estimate",
-                    reference_line_color: str = "gray",
+                    figsize: tuple = (10, 5.5),
+                    title: str = "Event study",
+                    xlabel: str = "Periods relative to treatment",
+                    ylabel: str = "Treatment effect",
+                    reference_line_color: str = "#64748B",
                     reference_line_style: str = "--",
-                    effect_color: str = "blue",
+                    effect_color: str = "#087F8C",
                     marker: str = "o") -> plt.Figure:
     """
     Create an event study plot from a specification with a fitted model.
@@ -285,8 +286,8 @@ def event_study_plot(spec: Union[StaggeredDiDSpec, EventStudySpec],
             marker=marker, 
             color=effect_color, 
             linestyle='none',  # This removes the connecting lines
-            label='Coefficient',
-            markersize=8)
+            label='Treatment effect',
+            markersize=6)
     
     # Add error bars (whiskers) with same color as points
     yerr = [non_ref_periods['coef'] - non_ref_periods['lower'], 
@@ -295,8 +296,8 @@ def event_study_plot(spec: Union[StaggeredDiDSpec, EventStudySpec],
                 yerr=yerr, 
                 fmt='none',  # No additional markers
                 ecolor=effect_color,  # Same color as points
-                elinewidth=2,
-                capsize=5,
+                elinewidth=1.5,
+                capsize=4,
                 label=f'{int(confidence_level*100)}% CI')
     
     # Plot reference period
@@ -305,7 +306,8 @@ def event_study_plot(spec: Union[StaggeredDiDSpec, EventStudySpec],
             color=effect_color,  # Same color as other coefficients
             linestyle='none',
             label='Reference period',
-            markersize=8)  # Same size as other coefficients
+            markerfacecolor='white',
+            markersize=6)
     
     # Add zero reference line
     ax.axhline(y=0, color=reference_line_color, linestyle=reference_line_style)
@@ -314,15 +316,22 @@ def event_study_plot(spec: Union[StaggeredDiDSpec, EventStudySpec],
     ax.axvline(x=0, color=reference_line_color, linestyle=reference_line_style, alpha=0.7)
     
     # Add labels and title
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    ax.set_title(title)
+    ax.set_xlabel(xlabel, fontsize=11)
+    ax.set_ylabel(ylabel, fontsize=11)
+    ax.set_title(title, fontsize=14, loc='left', pad=14, color='#0F172A')
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
     
     # Add grid
-    ax.grid(True, linestyle=':', alpha=0.6)
+    ax.set_axisbelow(True)
+    ax.grid(True, axis='y', color='#E2E8F0', linewidth=.7)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_color('#CBD5E1')
+    ax.spines['bottom'].set_color('#CBD5E1')
+    ax.tick_params(labelsize=10, colors='#475569')
     
     # Add legend
-    ax.legend()
+    ax.legend(frameon=False, fontsize=9)
     
     # Adjust layout
     plt.tight_layout()
@@ -443,7 +452,9 @@ def synthdid_plot(spec, output_config: Optional[OutputConfig] = None, **kwargs) 
         matplotlib figure object
     """
         
-    # Create the plot using the synthdid plotting function
+    # Use the observed outcome label; the plot's x coordinates are period indices.
+    kwargs.setdefault('ylabel', spec.outcome_col)
+    kwargs.setdefault('title', 'Synthetic difference-in-differences')
     fig, ax = plot_synthdid(spec.model, **kwargs)
     
     # Save if output config provided
@@ -488,7 +499,7 @@ def callaway_santanna_summary_table(spec: StaggeredDiDSpec) -> pd.DataFrame:
 @make_transformable
 def callaway_santanna_group_event_plot(
     spec: StaggeredDiDSpec,
-    figsize: tuple = (15, 10),
+    figsize: tuple = (10, 8),
     title: str = "Group-Time Treatment Effects (Callaway & Sant'Anna)",
     xlabel: str = "Time Period",
     ylabel: str = "ATT Estimate",
@@ -513,9 +524,6 @@ def callaway_santanna_group_event_plot(
     
     att_gt = spec.model['att_gt_object']
     
-    # Close any existing figures to avoid multiple windows
-    plt.close('all')
-    
     # Use the ATTgt plotting method - it will create its own figure
     fig = att_gt.plot_attgt(
         title=title,
@@ -528,6 +536,7 @@ def callaway_santanna_group_event_plot(
     
     # Set the figure size
     fig.set_size_inches(figsize)
+    fig.tight_layout()
     
     # Save if path provided
     if save_path:
@@ -623,11 +632,11 @@ def callaway_santanna_comprehensive_results(spec: StaggeredDiDSpec) -> str:
 @make_transformable  
 def callaway_santana_event_study_plot(
     spec: StaggeredDiDSpec,
-    figsize: tuple = (16, 12),
+    figsize: tuple = (10, 5.5),
     save_path: Optional[str] = None
 ) -> plt.Figure:
     """
-    Create comprehensive diagnostic plots for Callaway & Sant'Anna estimation.
+    Create a dynamic treatment effect plot for Callaway & Sant'Anna estimation.
     
     Args:
         spec: StaggeredDiDSpec with fitted Callaway & Sant'Anna model
@@ -635,26 +644,13 @@ def callaway_santana_event_study_plot(
         save_path: Optional path to save the plot
         
     Returns:
-        Matplotlib figure with multiple diagnostic subplots
+        Matplotlib figure with dynamic treatment effects and 95% intervals
     """
     if spec.model is None or 'att_gt_object' not in spec.model:
         raise ValueError("No Callaway & Sant'Anna csdid results found in spec.model")
     
-    att_gt = spec.model['att_gt_object']
-    overall_effect = spec.model.get('overall_effect')
-    dynamic_effects = spec.model.get('dynamic_effects')
-    group_effects = spec.model.get('group_effects')
-    
-    # Create subplots
-    fig, axes = plt.subplots(2, 2, figsize=figsize)
-    fig.suptitle('Callaway & Sant\'Anna DiD - Comprehensive Results', fontsize=16, fontweight='bold')
-    
     # Get the dynamic effects object
     dynamic_effects = spec.model['dynamic_effects']
-    
-    # Use the built-in plotting function from att_gt instead of manual plotting
-    # This ensures we get the correct event times
-    plt.close('all')  # Close any existing plots
     
     # Manual plotting using the aggregated results
     if hasattr(dynamic_effects, 'atte') and dynamic_effects.atte is not None:
@@ -666,19 +662,29 @@ def callaway_santana_event_study_plot(
         # Create the plot manually
         fig, ax = plt.subplots(figsize=figsize)
         ax.errorbar(event_times, att_estimates, yerr=1.96*np.array(se_estimates), 
-                   fmt='o', color='blue', capsize=5, capthick=2)
-        ax.axhline(y=0, color='gray', linestyle='--')
-        ax.axvline(x=0, color='gray', linestyle='--', alpha=0.7)
-        ax.set_xlabel('Event Time')
-        ax.set_ylabel('ATT')
-        ax.set_title('Dynamic Treatment Effects')
-        ax.grid(True, alpha=0.3)
+                   fmt='o', color='#087F8C', capsize=4, elinewidth=1.5,
+                   markersize=6, label='ATT with 95% CI')
+        ax.axhline(y=0, color='#64748B', linestyle='--', linewidth=1)
+        ax.axvline(x=0, color='#64748B', linestyle='--', linewidth=1, alpha=0.7)
+        ax.set_xlabel('Periods relative to treatment', fontsize=11)
+        ax.set_ylabel(f'Treatment effect on {spec.outcome_col}', fontsize=11)
+        ax.set_title("Dynamic treatment effects · Callaway & Sant'Anna",
+                     fontsize=14, loc='left', pad=14, color='#0F172A')
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+        ax.set_axisbelow(True)
+        ax.grid(True, axis='y', color='#E2E8F0', linewidth=.7)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_color('#CBD5E1')
+        ax.spines['bottom'].set_color('#CBD5E1')
+        ax.tick_params(labelsize=10, colors='#475569')
+        ax.legend(frameon=False, fontsize=9)
+        fig.tight_layout()
         
         # Save if path provided
         if save_path:
             fig.savefig(save_path, dpi=300, bbox_inches='tight')
         
-        plt.tight_layout()
         return fig
     else:
         raise ValueError("Dynamic effects object does not have aggregated results")
@@ -740,71 +746,6 @@ def hainmueller_synth_validity_plot(spec, save_path: Optional[str] = None,
         fig.savefig(save_path, dpi=300, bbox_inches='tight')
 
     return fig
-
-
-@make_transformable
-def plot_balance_coefficients(spec, **kwargs) -> plt.Figure:
-    """
-    Create horizontal error bar plot showing standardized coefficients for balance tests.
-    
-    Shows point estimates with horizontal error bars and vertical dashed line at 0.
-    
-    Args:
-        spec: Specification object with balance_stats attribute containing balance results
-        **kwargs: Additional plotting arguments
-        
-    Returns:
-        matplotlib Figure object
-    """
-    if not hasattr(spec, 'balance_stats'):
-        raise ValueError("No balance statistics found. Run balance tests first.")
-    
-    balance_df = spec.balance_stats
-    if balance_df.empty:
-        reason = getattr(spec, 'balance_diagnostics', {}).get(
-            'reason', 'No control covariates are available for balance assessment.')
-        fig, ax = plt.subplots(figsize=(10, 3))
-        ax.set_axis_off()
-        ax.set_title('Covariate balance unavailable')
-        ax.text(0.5, 0.5, reason, ha='center', va='center', wrap=True,
-                transform=ax.transAxes)
-        fig.tight_layout()
-        return fig
-    
-    # Create figure
-    fig, ax = plt.subplots(figsize=(10, max(6, len(balance_df) * 0.4)))
-    
-    # Extract data for plotting
-    variables = balance_df['covariate']
-    differences = balance_df['diff']
-    std_errors = balance_df['se_diff']
-    
-    # Create y positions
-    y_positions = range(len(variables))
-    
-    # Plot horizontal error bars with point estimates
-    ax.errorbar(differences, y_positions, xerr=1.96*std_errors, 
-                fmt='o', color='blue', capsize=5, capthick=2, 
-                ecolor='blue', alpha=0.7, markersize=6)
-    
-    # Add vertical reference line at 0
-    ax.axvline(0, color='black', linestyle='--', alpha=0.8, linewidth=2)
-    
-    # Customize plot
-    ax.set_yticks(y_positions)
-    ax.set_yticklabels(variables)
-    ax.set_xlabel('Standardized Coefficient (95% CI)', fontsize=12)
-    ax.set_ylabel('Covariates', fontsize=12)
-    ax.set_title('Balance Test Results', fontsize=14, fontweight='bold')
-    
-    # Add grid for easier reading
-    ax.grid(True, axis='x', alpha=0.3)
-    
-    # Adjust layout
-    plt.tight_layout()
-    
-    return fig
-
 
 
 def _plot_uplift_curve_imbalanced(y_true, uplift_scores, treatment, ax=None, **kwargs):
@@ -1087,7 +1028,7 @@ def uplift_curve_plot_adaptive(spec: UpliftSpec, **kwargs) -> plt.Figure:
 @make_transformable
 def plot_balance_coefficients(spec, **kwargs) -> plt.Figure:
     """
-    Create horizontal error bar plot showing standardized coefficients for balance tests.
+    Create a horizontal error bar plot showing mean differences for balance tests.
     
     Shows point estimates with horizontal error bars and vertical dashed line at 0.
     
@@ -1105,16 +1046,17 @@ def plot_balance_coefficients(spec, **kwargs) -> plt.Figure:
     if balance_df.empty:
         reason = getattr(spec, 'balance_diagnostics', {}).get(
             'reason', 'No control covariates are available for balance assessment.')
-        fig, ax = plt.subplots(figsize=(10, 3))
+        fig, ax = plt.subplots(figsize=(10, 1.8))
         ax.set_axis_off()
-        ax.set_title('Covariate balance unavailable')
-        ax.text(0.5, 0.5, reason, ha='center', va='center', wrap=True,
-                transform=ax.transAxes)
+        ax.set_title('Covariate balance unavailable', fontsize=14,
+                     color='#0F172A', pad=12)
+        ax.text(0, 0.5, reason, ha='left', va='center', wrap=True,
+                transform=ax.transAxes, fontsize=11, color='#475569')
         fig.tight_layout()
         return fig
     
     # Create figure
-    fig, ax = plt.subplots(figsize=(10, max(6, len(balance_df) * 0.4)))
+    fig, ax = plt.subplots(figsize=(10, max(3, len(balance_df) * 0.45 + 1.5)))
     
     # Extract data for plotting
     variables = balance_df['covariate']
@@ -1126,21 +1068,27 @@ def plot_balance_coefficients(spec, **kwargs) -> plt.Figure:
     
     # Plot horizontal error bars with point estimates
     ax.errorbar(differences, y_positions, xerr=1.96*std_errors, 
-                fmt='o', color='blue', capsize=5, capthick=2, 
-                ecolor='blue', alpha=0.7, markersize=6)
+                fmt='o', color='#087F8C', capsize=4, elinewidth=1.5,
+                markersize=6)
     
     # Add vertical reference line at 0
-    ax.axvline(0, color='black', linestyle='--', alpha=0.8, linewidth=2)
+    ax.axvline(0, color='#64748B', linestyle='--', linewidth=1)
     
     # Customize plot
     ax.set_yticks(y_positions)
     ax.set_yticklabels(variables)
-    ax.set_xlabel('Standardized Coefficient (95% CI)', fontsize=12)
-    ax.set_ylabel('Covariates', fontsize=12)
-    ax.set_title('Balance Test Results', fontsize=14, fontweight='bold')
+    ax.set_xlabel('Mean difference (95% CI)', fontsize=11)
+    ax.set_ylabel('Covariates', fontsize=11)
+    ax.set_title('Covariate balance', fontsize=14, loc='left', pad=14, color='#0F172A')
     
     # Add grid for easier reading
-    ax.grid(True, axis='x', alpha=0.3)
+    ax.set_axisbelow(True)
+    ax.grid(True, axis='x', color='#E2E8F0', linewidth=.7)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_color('#CBD5E1')
+    ax.spines['bottom'].set_color('#CBD5E1')
+    ax.tick_params(labelsize=10, colors='#475569')
     
     # Adjust layout
     plt.tight_layout()
